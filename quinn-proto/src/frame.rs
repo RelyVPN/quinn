@@ -385,7 +385,14 @@ impl Ack {
         buf: &mut W,
     ) {
         let mut rest = ranges.iter().rev();
-        let first = rest.next().unwrap();
+        let first = match rest.next() {
+            Some(range) => range,
+            None => {
+                tracing::error!("Attempted to encode ACK frame with empty ranges");
+                // 如果没有范围，我们无法正确编码 ACK 帧，所以提前返回
+                return;
+            }
+        };
         let largest = first.end - 1;
         let first_size = first.end - first.start;
         buf.write(if ecn.is_some() {

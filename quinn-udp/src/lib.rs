@@ -161,7 +161,13 @@ fn log_sendmsg_error(
     transmit: &Transmit,
 ) {
     let now = Instant::now();
-    let last_send_error = &mut *last_send_error.lock().expect("poisend lock");
+    let mut last_send_error = match last_send_error.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::error!("Failed to acquire lock: poisoned mutex");
+            poisoned.into_inner()
+        }
+    };
     if now.saturating_duration_since(*last_send_error) > IO_ERROR_LOG_INTERVAL {
         *last_send_error = now;
         log::warn!(

@@ -126,7 +126,14 @@ impl PartialDecode {
             ..
         }) = plain_header
         {
-            let number = Self::decrypt_header(&mut buf, header_crypto.unwrap())?;
+            let header_crypto = match header_crypto {
+                Some(crypto) => crypto,
+                None => {
+                    tracing::error!("Missing header crypto for Initial packet");
+                    return Err(PacketDecodeError::InvalidHeader("missing header crypto for Initial packet"));
+                }
+            };
+            let number = Self::decrypt_header(&mut buf, header_crypto)?;
             let header_len = buf.position() as usize;
             let mut bytes = buf.into_inner();
 
@@ -156,7 +163,16 @@ impl PartialDecode {
                 ty,
                 dst_cid,
                 src_cid,
-                number: Self::decrypt_header(&mut buf, header_crypto.unwrap())?,
+                number: {
+                    let header_crypto = match header_crypto {
+                        Some(crypto) => crypto,
+                        None => {
+                            tracing::error!("Missing header crypto for Long packet");
+                            return Err(PacketDecodeError::InvalidHeader("missing header crypto for Long packet"));
+                        }
+                    };
+                    Self::decrypt_header(&mut buf, header_crypto)?
+                },
                 version,
             },
             Retry {
@@ -169,7 +185,14 @@ impl PartialDecode {
                 version,
             },
             Short { spin, dst_cid, .. } => {
-                let number = Self::decrypt_header(&mut buf, header_crypto.unwrap())?;
+                let header_crypto = match header_crypto {
+                    Some(crypto) => crypto,
+                    None => {
+                        tracing::error!("Missing header crypto for Short packet");
+                        return Err(PacketDecodeError::InvalidHeader("missing header crypto for Short packet"));
+                    }
+                };
+                let number = Self::decrypt_header(&mut buf, header_crypto)?;
                 let key_phase = buf.get_ref()[0] & KEY_PHASE_BIT != 0;
                 Header::Short {
                     spin,

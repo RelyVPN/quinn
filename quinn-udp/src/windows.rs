@@ -174,7 +174,16 @@ impl UdpSocketState {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
-        let wsa_recvmsg_ptr = WSARECVMSG_PTR.expect("valid function pointer for WSARecvMsg");
+        let wsa_recvmsg_ptr = match WSARECVMSG_PTR {
+            Some(ptr) => ptr,
+            None => {
+                tracing::error!("WSARecvMsg function pointer not available");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "WSARecvMsg function not available",
+                ));
+            }
+        };
 
         // we cannot use [`socket2::MsgHdrMut`] as we do not have access to inner field which holds the WSAMSG
         let mut ctrl_buf = cmsg::Aligned([0; CMSG_LEN]);
@@ -264,7 +273,14 @@ impl UdpSocketState {
         meta[0] = RecvMeta {
             len: len as usize,
             stride: stride as usize,
-            addr: addr.unwrap(),
+            addr: match addr {
+                Some(addr) => addr,
+                None => {
+                    tracing::error!("Failed to get socket address from received packet");
+                    // 返回一个无效地址而不是崩溃
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+                }
+            },
             ecn: EcnCodepoint::from_bits(ecn_bits as u8),
             dst_ip,
         };

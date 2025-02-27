@@ -51,7 +51,13 @@ impl<'a, M: MsgHdr> Encoder<'a, M> {
             self.len + space,
             self.hdr.control_len()
         );
-        let cmsg = self.cmsg.take().expect("no control buffer space remaining");
+        let cmsg = match self.cmsg.take() {
+            Some(c) => c,
+            None => {
+                tracing::error!("No control buffer space remaining");
+                return;
+            }
+        };
         cmsg.set(
             level,
             ty,

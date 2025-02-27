@@ -67,10 +67,13 @@ impl CidQueue {
         // retire_prior_to, and inform the caller that all prior CIDs have been retired, and of
         // the new CID's reset token.
         self.cursor = ((self.cursor as u64 + retired_count) % Self::LEN as u64) as usize;
-        let (i, (_, token)) = self
-            .iter()
-            .next()
-            .expect("it is impossible to retire a CID without supplying a new one");
+        let (i, (_, token)) = match self.iter().next() {
+            Some(next) => next,
+            None => {
+                tracing::error!("Failed to retire CID: no CID available to supply");
+                return Ok(None);
+            }
+        };
         self.cursor = (self.cursor + i) % Self::LEN;
         let orig_offset = self.offset;
         self.offset = cid.retire_prior_to + i as u64;
@@ -82,7 +85,13 @@ impl CidQueue {
         // made to buffer an arbitrarily large number of RETIRE_CONNECTION_ID frames.
         Ok(Some((
             orig_offset..self.offset.min(orig_offset + Self::LEN as u64),
-            token.expect("non-initial CID missing reset token"),
+            match token {
+                Some(token) => token,
+                None => {
+                    tracing::error!("Non-initial CID missing reset token");
+                    ResetToken::from([0; crate::RESET_TOKEN_SIZE])
+                }
+            },
         )))
     }
 
@@ -95,7 +104,13 @@ impl CidQueue {
         let orig_offset = self.offset;
         self.offset += i as u64;
         self.cursor = (self.cursor + i) % Self::LEN;
-        Some((cid_data.1.unwrap(), orig_offset..self.offset))
+        Some((match cid_data.1 {
+            Some(token) => token,
+            None => {
+                tracing::error!("Non-initial CID missing reset token in next()");
+                ResetToken::from([0; crate::RESET_TOKEN_SIZE])
+            }
+        }, orig_offset..self.offset))
     }
 
     /// Iterate CIDs in CidQueue that are not `None`, including the active CID
@@ -114,7 +129,13 @@ impl CidQueue {
 
     /// Return active remote CID itself
     pub(crate) fn active(&self) -> ConnectionId {
-        self.buffer[self.cursor].unwrap().0
+        match self.buffer[self.cursor] {
+            Some((cid, _)) => cid,
+            None => {
+                tracing::error!("No active CID found, returning empty CID");
+                ConnectionId::new(&[])
+            }
+        }
     }
 
     /// Return the sequence number of active remote CID

@@ -155,14 +155,26 @@ impl Codec for VarInt {
                     return Err(UnexpectedEnd);
                 }
                 r.copy_to_slice(&mut buf[1..2]);
-                u64::from(u16::from_be_bytes(buf[..2].try_into().unwrap()))
+                match buf[..2].try_into() {
+                    Ok(bytes) => u64::from(u16::from_be_bytes(bytes)),
+                    Err(e) => {
+                        tracing::error!("Failed to convert bytes to u16: {}", e);
+                        return Err(UnexpectedEnd);
+                    }
+                }
             }
             0b10 => {
                 if r.remaining() < 3 {
                     return Err(UnexpectedEnd);
                 }
                 r.copy_to_slice(&mut buf[1..4]);
-                u64::from(u32::from_be_bytes(buf[..4].try_into().unwrap()))
+                match buf[..4].try_into() {
+                    Ok(bytes) => u64::from(u32::from_be_bytes(bytes)),
+                    Err(e) => {
+                        tracing::error!("Failed to convert bytes to u32: {}", e);
+                        return Err(UnexpectedEnd);
+                    }
+                }
             }
             0b11 => {
                 if r.remaining() < 7 {

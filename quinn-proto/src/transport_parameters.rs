@@ -171,9 +171,21 @@ impl TransportParameters {
                 .datagram_receive_buffer_size
                 .map(|x| (x.min(u16::MAX.into()) as u16).into()),
             grease_quic_bit: endpoint_config.grease_quic_bit,
-            min_ack_delay: Some(
-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
-            ),
+            min_ack_delay: match u64::try_from(TIMER_GRANULARITY.as_micros()) {
+                Ok(micros) => match VarInt::from_u64(micros) {
+                    Ok(varint) => Some(varint),
+                    Err(e) => {
+                        tracing::error!("Failed to convert timer granularity to VarInt: {}", e);
+                        // 使用一个合理的默认值
+                        Some(VarInt::from_u32(1000)) // 1ms
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to convert timer granularity to u64: {}", e);
+                    // 使用一个合理的默认值
+                    Some(VarInt::from_u32(1000)) // 1ms
+                }
+            },
             grease_transport_parameter: Some(ReservedTransportParameter::random(rng)),
             write_order: Some({
                 let mut order = std::array::from_fn(|i| i as u8);

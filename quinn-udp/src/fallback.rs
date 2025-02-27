@@ -2,6 +2,7 @@ use std::{
     io::{self, IoSliceMut},
     sync::Mutex,
     time::Instant,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
 use super::{log_sendmsg_error, RecvMeta, Transmit, UdpSockRef, IO_ERROR_LOG_INTERVAL};
@@ -69,7 +70,13 @@ impl UdpSocketState {
         meta[0] = RecvMeta {
             len,
             stride: len,
-            addr: addr.as_socket().unwrap(),
+            addr: match addr.as_socket() {
+                Some(addr) => addr,
+                None => {
+                    tracing::error!("Failed to convert socket address");
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+                }
+            },
             ecn: None,
             dst_ip: None,
         };
