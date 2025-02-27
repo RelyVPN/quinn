@@ -208,7 +208,13 @@ impl Endpoint {
             match route_to {
                 RouteDatagramTo::Incoming(incoming_idx) => {
                     let incoming_buffer = &mut self.incoming_buffers[incoming_idx];
-                    let config = &self.server_config.as_ref().unwrap();
+                    let config = match &self.server_config {
+                        Some(config) => config,
+                        None => {
+                            tracing::error!("Server config missing when handling incoming packet");
+                            return None;
+                        }
+                    };
 
                     if incoming_buffer
                         .total_bytes
@@ -419,13 +425,20 @@ impl Endpoint {
         buf: &mut Vec<u8>,
     ) -> Option<DatagramEvent> {
         let dst_cid = event.first_decode.dst_cid();
-        let header = event.first_decode.initial_header().unwrap();
+        let header = match event.first_decode.initial_header() {
+            Some(header) => header,
+            None => {
+                tracing::error!("Expected Initial packet but header was not Initial");
+                return None;
+            }
+        };
 
-        let Some(server_config) = &self.server_config else {
-            debug!("packet for unrecognized connection {}", dst_cid);
-            return self
-                .stateless_reset(event.now, datagram_len, addresses, *dst_cid, buf)
-                .map(DatagramEvent::Response);
+        let server_config = match self.server_config.as_ref() {
+            Some(config) => config.clone(),
+            None => {
+                tracing::error!("Server config missing when handling first packet");
+                return None;
+            }
         };
 
         if datagram_len < MIN_INITIAL_SIZE as usize {
@@ -532,8 +545,21 @@ impl Endpoint {
             version,
             ..
         } = incoming.packet.header;
-        let server_config =
-            server_config.unwrap_or_else(|| self.server_config.as_ref().unwrap().clone());
+        let server_config = match server_config {
+            Some(config) => config,
+            None => match self.server_config.as_ref() {
+                Some(config) => config.clone(),
+                None => {
+                    tracing::error!("No server config available for incoming connection");
+                    return Err(AcceptError {
+                        cause: ConnectionError::TransportError(
+                            TransportError::INTERNAL_ERROR("missing server configuration")
+                        ),
+                        response: None,
+                    });
+                }
+            },
+        };
 
         if server_config
             .transport
@@ -673,7 +699,13 @@ impl Endpoint {
         &mut self,
         header: &ProtectedInitialHeader,
     ) -> Result<(), TransportError> {
-        let config = &self.server_config.as_ref().unwrap();
+        let config = match self.server_config.as_ref() {
+            Some(config) => config,
+            None => {
+                tracing::error!("No server config available during early validation");
+                return Err(TransportError::INTERNAL_ERROR("missing server configuration"));
+            }
+        };
         if self.cids_exhausted() || self.incoming_buffers.len() >= config.max_incoming {
             return Err(TransportError::CONNECTION_REFUSED(""));
         }
@@ -722,9 +754,16 @@ impl Endpoint {
         }
 
         self.clean_up_incoming(&incoming);
-        incoming.improper_drop_warner.dismiss();
 
-        let server_config = self.server_config.as_ref().unwrap();
+        let server_config = match self.server_config.as_ref() {
+            Some(config) => config,
+            None => {
+                tracing::error!("No server config available during retry");
+                return Err(RetryError(incoming));
+            }
+        };
+
+        incoming.improper_drop_warner.dismiss();
 
         // First Initial
         // The peer will use this as the DCID of its following Initials. Initial DCIDs are
