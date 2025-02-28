@@ -103,13 +103,6 @@ pub(crate) struct Iter<'a, M: MsgHdr> {
 impl<'a, M: MsgHdr> Iter<'a, M> {
     /// Creates a new iterator over the control messages in `hdr`.
     pub(crate) unsafe fn new(hdr: &'a M) -> Self {
-        static ITER_COUNT: AtomicU64 = AtomicU64::new(0);
-        
-        let count = ITER_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count % 1000 == 0 {
-            eprintln!("🔍 cmsg::Iter 已创建 {} 个实例", count);
-        }
-        
         Self {
             hdr,
             cmsg: hdr.cmsg_first_hdr().as_ref(),
@@ -122,15 +115,7 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
     type Item = &'a M::ControlMessage;
 
     fn next(&mut self) -> Option<Self::Item> {
-        static NEXT_COUNT: AtomicU64 = AtomicU64::new(0);
-        
-        let count = NEXT_COUNT.fetch_add(1, Ordering::Relaxed);
-        
-        // 每次调用都记录日志
-        eprintln!("🔄 cmsg::Iter::next 调用 #{}, 迭代器计数: {}", count, self.count);
-        
         if self.cmsg.is_none() {
-            eprintln!("🔄 cmsg::Iter::next #{} 返回 None", count);
             return None;
         }
         
@@ -139,10 +124,6 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
         
         // 增加计数
         self.count += 1;
-        
-        // 记录下一个指针的情况
-        eprintln!("🔄 cmsg::Iter::next #{} 返回消息, 下一个指针: {}", 
-                  count, if self.cmsg.is_some() { "有效" } else { "无效" }); 
         
         Some(current)
     }
