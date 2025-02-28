@@ -11,8 +11,8 @@ use tracing::trace;
 
 use super::assembler::Assembler;
 use crate::{
-    connection::StreamsState, crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet,
-    shared::IssuedCid, Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt,
+    Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, connection::StreamsState,
+    crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet, shared::IssuedCid,
 };
 
 pub(super) struct PacketSpace {
@@ -464,7 +464,7 @@ impl Dedup {
     pub(super) fn insert(&mut self, packet: u64) -> bool {
         if let Some(diff) = packet.checked_sub(self.next) {
             // Right of window
-            self.window = (self.window << 1 | 1)
+            self.window = ((self.window << 1) | 1)
                 .checked_shl(cmp::min(diff, u64::from(u32::MAX)) as u32)
                 .unwrap_or(0);
             self.next = packet + 1;
