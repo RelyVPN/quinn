@@ -23,21 +23,7 @@ impl MsgHdr for libc::msghdr {
         if unsafe { next.as_ref() }
             .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
         {
-            // 添加明显的日志，表明检测到了macOS的bug
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (标准msghdr): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
-                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
-                std::mem::size_of::<libc::cmsghdr>()
-            );
-            
-            #[cfg(feature = "direct-log")]
-            log::warn!(
-                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (标准msghdr): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
-                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
-                std::mem::size_of::<libc::cmsghdr>()
-            );
-            
+            // 静默修复，不再输出警告日志
             return std::ptr::null_mut();
         }
         
@@ -77,21 +63,7 @@ impl MsgHdr for crate::imp::msghdr_x {
         if unsafe { next.as_ref() }
             .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
         {
-            // 添加明显的日志，表明检测到了macOS的bug
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (msghdr_x): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
-                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
-                std::mem::size_of::<libc::cmsghdr>()
-            );
-            
-            #[cfg(feature = "direct-log")]
-            log::warn!(
-                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (msghdr_x): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
-                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
-                std::mem::size_of::<libc::cmsghdr>()
-            );
-            
+            // 静默修复，不再输出警告日志
             return std::ptr::null_mut();
         }
 
