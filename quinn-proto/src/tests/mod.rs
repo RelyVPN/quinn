@@ -2089,7 +2089,7 @@ fn handshake_anti_deadlock_probe() {
 /// Ensures that the server can respond with 3 initial packets during the handshake
 /// before the anti-amplification limit kicks in when MTUs are similar.
 #[test]
-fn server_can_send_3_inital_packets() {
+fn server_can_send_10_inital_packets() {
     let _guard = subscribe();
 
     let (cert, key) = big_cert_and_key();
@@ -2102,8 +2102,8 @@ fn server_can_send_3_inital_packets() {
     pair.drive_client();
     // Server sends first flight, gets blocked on anti-amplification
     pair.drive_server();
-    // Server should have queued 3 packets at this time
-    assert_eq!(pair.client.inbound.len(), 3);
+    // Server should have queued 10 packets at this time
+    assert_eq!(pair.client.inbound.len(), 10);
 
     pair.drive();
     assert_matches!(
