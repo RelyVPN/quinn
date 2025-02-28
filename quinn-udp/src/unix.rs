@@ -230,23 +230,8 @@ impl UdpSocketState {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
-        // 添加简单计数器
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SOCKET_RECV_COUNT: AtomicU64 = AtomicU64::new(0);
-        let now = std::time::Instant::now();
-        
-        let count = SOCKET_RECV_COUNT.fetch_add(1, Ordering::Relaxed);
-        // 每次调用都记录日志
-        eprintln!("📊 UdpSocketState::recv 调用 #{}, bufs.len={}, meta.len={}", 
-                  count, bufs.len(), meta.len());
-        
+        // 简化实现，只保留必要的监控代码
         let result = recv(socket.0, bufs, meta);
-        
-        let elapsed = now.elapsed().as_micros();
-        // 每次调用都记录耗时
-        eprintln!("⏱️ UdpSocketState::recv #{} 耗时: {}微秒, 结果: {:?}", 
-                  count, elapsed, result);
-        
         result
     }
 
@@ -520,108 +505,61 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
 #[cfg(apple_fast)]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    // 只保留必要的计数器
     static RECV_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static RECV_TOTAL_TIME_US: AtomicUsize = AtomicUsize::new(0);
-    static RECV_TOTAL_MSGS: AtomicUsize = AtomicUsize::new(0);
+    static RMSG_COUNT: AtomicUsize = AtomicUsize::new(0);
     
-    let recv_count = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    let start = std::time::Instant::now();
+    let recv_id = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    let rmsg_start = RMSG_COUNT.load(Ordering::Relaxed);
     
-    // 打印关键变量
-    if recv_count % 100 == 0 {
-        eprintln!("🔧 recv 输入参数: bufs.len={}, meta.len={}", bufs.len(), meta.len());
-    }
+    // 简化日志
+    eprintln!("RECV#{} 开始", recv_id);
     
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
     let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
     let max_msg_count = bufs.len().min(BATCH_SIZE);
     
-    // 打印 max_msg_count
-    eprintln!("🔧 recv #{} max_msg_count={}, BATCH_SIZE={}", recv_count, max_msg_count, BATCH_SIZE);
-    
     for i in 0..max_msg_count {
         prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
     }
     let msg_count = loop {
-        #[cfg(apple_fast)]
-        let n = unsafe { 
-            // 添加简单计数器
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
-            let now = std::time::Instant::now();
-            
-            let call_count = CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-            // 每次调用都记录日志
-            eprintln!("🔍 recvmsg_x 调用 #{}, max_msg_count={}", call_count, max_msg_count);
-            
-            let result = recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0);
-            
-            let elapsed = now.elapsed().as_micros();
-            // 每次调用都记录耗时
-            eprintln!("⏱️ recvmsg_x #{} 耗时: {}微秒, 返回值: {}", call_count, elapsed, result);
-            
-            result
-        };
+        let rmsg_id = RMSG_COUNT.fetch_add(1, Ordering::Relaxed);
+        eprintln!("RMSG#{} 调用 [RECV#{}]", rmsg_id, recv_id);
         
-        #[cfg(not(apple_fast))]
         let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
+        
+        eprintln!("RMSG#{} 返回 {}", rmsg_id, n);
         
         match n {
             -1 => {
                 let e = io::Error::last_os_error();
                 if e.kind() == io::ErrorKind::Interrupted {
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("🔍 quinn-udp: recvmsg_x被中断，重试");
-                    
                     continue;
                 }
                 return Err(e);
             }
-            n => {
-                #[cfg(feature = "tracing")]
-                tracing::debug!("🔍 quinn-udp: recvmsg_x返回消息数: {}", n);
-                
-                break n;
-            }
+            n => break n,
         }
     };
+    
     for i in 0..(msg_count as usize) {
-        eprintln!("📦 处理消息 #{}, 大小: {}", i+1, hdrs[i].msg_datalen);
         meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
     }
     
-    // 记录处理的消息数量和关键变量
-    eprintln!("📦 apple_fast recv #{} 处理了 {} 条消息, max_msg_count={}, bufs.len={}", 
-              recv_count, msg_count, max_msg_count, bufs.len());
+    let rmsg_end = RMSG_COUNT.load(Ordering::Relaxed);
+    let rmsg_calls = rmsg_end - rmsg_start;
     
-    RECV_TOTAL_MSGS.fetch_add(msg_count as usize, Ordering::Relaxed);
-    let elapsed = start.elapsed().as_micros() as usize;
-    RECV_TOTAL_TIME_US.fetch_add(elapsed, Ordering::Relaxed);
+    // 简化日志，重点关注调用比例
+    eprintln!("RECV#{} 完成: 调用了 {} 次 RMSG, 结果: {}{}",
+              recv_id, rmsg_calls, msg_count,
+              if rmsg_calls > 1 { " ⚠️多次调用⚠️" } else { "" });
     
-    if recv_count % 100 == 0 {
-        let total_time = RECV_TOTAL_TIME_US.load(Ordering::Relaxed);
-        let total_msgs = RECV_TOTAL_MSGS.load(Ordering::Relaxed);
-        let avg_time = if recv_count > 0 { total_time / recv_count } else { 0 };
-        let avg_msgs = if recv_count > 0 { total_msgs as f64 / recv_count as f64 } else { 0.0 };
-        
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "📊 recv 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，总处理消息 {}，平均每次 {:.2} 条", 
-            recv_count, avg_time, elapsed, total_msgs, avg_msgs
-        );
-        
-        #[cfg(all(not(feature = "tracing"), feature = "log"))]
-        log::info!(
-            "📊 recv 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，总处理消息 {}，平均每次 {:.2} 条", 
-            recv_count, avg_time, elapsed, total_msgs, avg_msgs
-        );
-        
-        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-        eprintln!(
-            "📊 recv 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，总处理消息 {}，平均每次 {:.2} 条", 
-            recv_count, avg_time, elapsed, total_msgs, avg_msgs
-        );
+    // 每100次调用输出一次统计
+    if recv_id % 100 == 0 {
+        eprintln!("📈 统计: RECV={}, RMSG={}, 比例={:.3}", 
+                  recv_id, RMSG_COUNT.load(Ordering::Relaxed), 
+                  RMSG_COUNT.load(Ordering::Relaxed) as f64 / recv_id as f64);
     }
     
     Ok(msg_count as usize)
@@ -784,15 +722,7 @@ fn decode_recv(
     #[cfg(apple_fast)] hdr: &msghdr_x,
     len: usize,
 ) -> RecvMeta {
-    // 添加静态计数器
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static DECODE_COUNT: AtomicU64 = AtomicU64::new(0);
-    static CMSG_COUNT: AtomicU64 = AtomicU64::new(0);
-    
-    let decode_count = DECODE_COUNT.fetch_add(1, Ordering::Relaxed);
-    // 每次调用都记录日志
-    eprintln!("🔍 decode_recv 调用 #{}, 长度: {}", decode_count, len);
-    
+    // 删除不必要的日志代码
     let name = unsafe { name.assume_init() };
     let mut ecn_bits = 0;
     let mut dst_ip = None;
@@ -800,15 +730,7 @@ fn decode_recv(
     let mut stride = len;
 
     let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
-    let mut cmsg_count = 0;
     for cmsg in cmsg_iter {
-        let _ = CMSG_COUNT.fetch_add(1, Ordering::Relaxed);
-        cmsg_count += 1;
-        
-        // 记录每个控制消息的类型
-        eprintln!("📨 控制消息 #{}: level={}, type={}", 
-                  cmsg_count, cmsg.cmsg_level, cmsg.cmsg_type);
-        
         match (cmsg.cmsg_level, cmsg.cmsg_type) {
             (libc::IPPROTO_IP, libc::IP_TOS) => unsafe {
                 ecn_bits = cmsg::decode::<u8, libc::cmsghdr>(cmsg);
@@ -853,9 +775,6 @@ fn decode_recv(
             _ => {}
         }
     }
-    
-    // 每次都记录处理的控制消息数量
-    eprintln!("📨 decode_recv #{} 处理了 {} 个控制消息", decode_count, cmsg_count);
 
     let addr = match libc::c_int::from(name.ss_family) {
         libc::AF_INET => {
@@ -1042,49 +961,4 @@ mod gro {
     pub(super) fn gro_segments() -> usize {
         1
     }
-}
-
-#[cfg(apple_fast)]
-unsafe fn log_recvmsg_x(
-    socket: libc::c_int,
-    msgp: *const msghdr_x,
-    cnt: libc::c_uint,
-    flags: libc::c_int,
-) -> libc::ssize_t {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static RECVMSG_X_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static RECVMSG_X_TOTAL_TIME_US: AtomicUsize = AtomicUsize::new(0);
-    
-    let count = RECVMSG_X_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    let start = std::time::Instant::now();
-    
-    let result = recvmsg_x(socket, msgp, cnt, flags);
-    
-    let elapsed = start.elapsed().as_micros() as usize;
-    RECVMSG_X_TOTAL_TIME_US.fetch_add(elapsed, Ordering::Relaxed);
-    
-    if count % 100 == 0 {
-        let total_time = RECVMSG_X_TOTAL_TIME_US.load(Ordering::Relaxed);
-        let avg_time = if count > 0 { total_time / count } else { 0 };
-        
-        #[cfg(feature = "tracing")]
-        tracing::info!(
-            "🔍 recvmsg_x 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，返回值 {}", 
-            count, avg_time, elapsed, result
-        );
-        
-        #[cfg(all(not(feature = "tracing"), feature = "log"))]
-        log::info!(
-            "🔍 recvmsg_x 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，返回值 {}", 
-            count, avg_time, elapsed, result
-        );
-        
-        #[cfg(all(not(feature = "tracing"), not(feature = "log")))]
-        eprintln!(
-            "🔍 recvmsg_x 已调用 {} 次，平均耗时 {}微秒，本次耗时 {}微秒，返回值 {}", 
-            count, avg_time, elapsed, result
-        );
-    }
-    
-    result
 }
