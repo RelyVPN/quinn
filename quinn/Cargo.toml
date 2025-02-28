@@ -15,7 +15,7 @@ rust-version.workspace = true
 [features]
 # NOTE: Please keep this in sync with the feature list in `.github/workflows/codecov.yml`, see
 # comment in that file for more information.
-default = ["log", "platform-verifier", "runtime-tokio", "rustls-ring"]
+default = ["log", "platform-verifier", "runtime-tokio", "rustls-ring", "fast-apple-datapath"]
 # Enables `Endpoint::client` and `Endpoint::server` conveniences
 aws-lc-rs = ["proto/aws-lc-rs"]
 aws-lc-rs-fips = ["proto/aws-lc-rs-fips"]
