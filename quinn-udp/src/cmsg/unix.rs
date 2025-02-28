@@ -15,7 +15,24 @@ impl MsgHdr for libc::msghdr {
     }
 
     fn cmsg_nxt_hdr(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage {
-        unsafe { libc::CMSG_NXTHDR(self, cmsg) }
+        let next = unsafe { libc::CMSG_NXTHDR(self, cmsg) };
+        
+        // 在macOS上添加额外检查，防止无效的控制消息导致无限循环
+        #[cfg(apple)]
+        if unsafe { next.as_ref() }
+            .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
+        {
+            // 添加明显的日志，表明检测到了macOS的bug
+            #[cfg(feature = "tracing")]
+            tracing::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            
+            #[cfg(feature = "direct-log")]
+            log::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            
+            return std::ptr::null_mut();
+        }
+        
+        next
     }
 
     fn set_control_len(&mut self, len: usize) {
@@ -51,6 +68,13 @@ impl MsgHdr for crate::imp::msghdr_x {
         if unsafe { next.as_ref() }
             .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
         {
+            // 添加明显的日志，表明检测到了macOS的bug
+            #[cfg(feature = "tracing")]
+            tracing::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            
+            #[cfg(feature = "direct-log")]
+            log::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            
             return std::ptr::null_mut();
         }
 
