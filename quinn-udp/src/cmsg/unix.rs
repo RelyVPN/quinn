@@ -18,16 +18,25 @@ impl MsgHdr for libc::msghdr {
         let next = unsafe { libc::CMSG_NXTHDR(self, cmsg) };
         
         // 在macOS上添加额外检查，防止无效的控制消息导致无限循环
+        // 注意：这个bug在macOS各个版本中都存在，包括macOS 15.3.1 (Sonoma)
         #[cfg(apple)]
         if unsafe { next.as_ref() }
             .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
         {
             // 添加明显的日志，表明检测到了macOS的bug
             #[cfg(feature = "tracing")]
-            tracing::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            tracing::warn!(
+                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (标准msghdr): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
+                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
+                std::mem::size_of::<libc::cmsghdr>()
+            );
             
             #[cfg(feature = "direct-log")]
-            log::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            log::warn!(
+                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (标准msghdr): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
+                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
+                std::mem::size_of::<libc::cmsghdr>()
+            );
             
             return std::ptr::null_mut();
         }
@@ -62,18 +71,26 @@ impl MsgHdr for crate::imp::msghdr_x {
         let selfp = self as *const _ as *mut libc::msghdr;
         let next = unsafe { libc::CMSG_NXTHDR(selfp, cmsg) };
 
-        // On MacOS < 14 CMSG_NXTHDR might continuously return a zeroed cmsg. In
-        // such case, return a null pointer instead, thus indicating the end of
-        // the cmsghdr chain.
+        // macOS的CMSG_NXTHDR可能会持续返回一个无效的cmsg。
+        // 这个bug在各个macOS版本中都存在，包括macOS 15.3.1 (Sonoma)
+        // 在这种情况下，返回null指针，表示控制消息链的结束。
         if unsafe { next.as_ref() }
             .is_some_and(|n| (n.cmsg_len as usize) < std::mem::size_of::<libc::cmsghdr>())
         {
             // 添加明显的日志，表明检测到了macOS的bug
             #[cfg(feature = "tracing")]
-            tracing::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            tracing::warn!(
+                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (msghdr_x): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
+                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
+                std::mem::size_of::<libc::cmsghdr>()
+            );
             
             #[cfg(feature = "direct-log")]
-            log::warn!("🔴🔴🔴 检测到macOS CMSG_NXTHDR bug: 返回了无效的控制消息 (cmsg_len < cmsghdr大小) 🔴🔴🔴");
+            log::warn!(
+                "🔴🔴🔴 检测到macOS CMSG_NXTHDR bug (msghdr_x): 返回了无效的控制消息 (cmsg_len={} < cmsghdr大小={}) 🔴🔴🔴",
+                unsafe { next.as_ref().map(|n| n.cmsg_len).unwrap_or(0) as usize },
+                std::mem::size_of::<libc::cmsghdr>()
+            );
             
             return std::ptr::null_mut();
         }
