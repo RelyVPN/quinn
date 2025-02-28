@@ -41,6 +41,8 @@ runtime-smol = ["async-io", "smol"]
 log = ["tracing/log", "proto/log", "udp/log"]
 # Enable rustls logging
 rustls-log = ["rustls?/logging"]
+# Enable fast-apple-datapath feature for quinn-udp on macOS
+fast-apple-datapath = ["udp/fast-apple-datapath"]
 
 [dependencies]
 async-io = { workspace = true, optional = true }
@@ -108,4 +110,4 @@ required-features = ["rustls-ring"]
 
 [package.metadata.docs.rs]
 # all non-default features except fips (cannot build on docs.rs environment)
-features = ["lock_tracking", "rustls-aws-lc-rs", "rustls-ring", "runtime-tokio", "runtime-async-std", "runtime-smol", "log", "rustls-log"]
+features = ["lock_tracking", "rustls-aws-lc-rs", "rustls-ring", "runtime-tokio", "runtime-async-std", "runtime-smol", "log", "rustls-log", "fast-apple-datapath"]
