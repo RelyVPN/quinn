@@ -84,6 +84,9 @@ pub struct UdpSocketState {
 
 impl UdpSocketState {
     pub fn new(sock: UdpSockRef<'_>) -> io::Result<Self> {
+        #[cfg(apple)]
+        crate::__check_features();
+        
         let io = sock.0;
         let mut cmsg_platform_space = 0;
         if cfg!(target_os = "linux")
