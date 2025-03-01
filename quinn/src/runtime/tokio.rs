@@ -75,11 +75,25 @@ impl AsyncUdpSocket for UdpSocket {
         meta: &mut [udp::RecvMeta],
     ) -> Poll<io::Result<usize>> {
         loop {
+            // 等待套接字就绪
             ready!(self.io.poll_recv_ready(cx))?;
-            if let Ok(res) = self.io.try_io(Interest::READABLE, || {
+            
+            // 尝试接收数据
+            match self.io.try_io(Interest::READABLE, || {
                 self.inner.recv((&self.io).into(), bufs, meta)
             }) {
-                return Poll::Ready(Ok(res));
+                // 成功接收数据
+                Ok(res) => return Poll::Ready(Ok(res)),
+                
+                // 处理错误情况
+                Err(e) => {
+                    // 对于 NotConnected 错误，直接返回错误，不再重试
+                    // 这类错误是永久性的，重试也无法解决
+                    if e.kind() == io::ErrorKind::NotConnected {
+                        return Poll::Ready(Err(e));
+                    }
+                    // 对于其他错误（如 WouldBlock），继续循环重试
+                }
             }
         }
     }
