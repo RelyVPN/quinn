@@ -459,6 +459,19 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
 
 #[cfg(not(any(apple, target_os = "openbsd", target_os = "netbsd", solarish)))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
+    tracing::info!("🔄 quinn-udp::unix::recv");
+    
+    // 故意触发 NotConnected 错误（错误码 57）
+    // 每 3 次调用触发一次错误，方便观察错误传播
+    static mut COUNTER: u32 = 0;
+    unsafe {
+        COUNTER += 1;
+        if COUNTER % 3 == 0 {
+            tracing::info!("🔥 quinn-udp::unix::recv 故意触发 NotConnected 错误");
+            return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
+        }
+    }
+    
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
     let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
     let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
@@ -472,6 +485,7 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         );
     }
     let msg_count = loop {
+        tracing::info!("🔄 quinn-udp::unix::recv 调用 recvmmsg");
         let n = unsafe {
             libc::recvmmsg(
                 io.as_raw_fd(),
@@ -483,17 +497,26 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         };
         if n == -1 {
             let e = io::Error::last_os_error();
+            tracing::info!("❌ quinn-udp::unix::recv 错误: {:?}", e);
+            
+            if e.kind() == io::ErrorKind::NotConnected {
+                tracing::info!("❌ quinn-udp::unix::recv NotConnected 错误");
+            }
+            
             if e.kind() == io::ErrorKind::Interrupted {
+                tracing::info!("🔄 quinn-udp::unix::recv 被中断，重试");
                 continue;
             }
             return Err(e);
         }
+        tracing::info!("🔄 quinn-udp::unix::recv 成功接收 {} 条消息", n);
         break n;
     };
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
     }
     
+    tracing::info!("✅ quinn-udp::unix::recv 完成");
     Ok(msg_count as usize)
 }
 
@@ -505,7 +528,17 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     static RMSG_COUNT: AtomicUsize = AtomicUsize::new(0);
     static RMSG_ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
     
-    let recv_id = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    tracing::info!("🔄 quinn-udp::unix::recv (apple_fast)");
+    
+    // 故意触发 NotConnected 错误（错误码 57）
+    // 每 3 次调用触发一次错误，方便观察错误传播
+    let call_count = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if call_count % 3 == 0 {
+        tracing::info!("🔥 quinn-udp::unix::recv (apple_fast) 故意触发 NotConnected 错误");
+        return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
+    }
+    
+    let recv_id = RECV_CALL_COUNT.load(Ordering::Relaxed);
     let rmsg_start = RMSG_COUNT.load(Ordering::Relaxed);
     
     // 简化日志
@@ -577,6 +610,19 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", solarish, apple_slow))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
+    tracing::info!("🔄 quinn-udp::unix::recv (apple_slow)");
+    
+    // 故意触发 NotConnected 错误（错误码 57）
+    // 每 3 次调用触发一次错误，方便观察错误传播
+    static mut COUNTER: u32 = 0;
+    unsafe {
+        COUNTER += 1;
+        if COUNTER % 3 == 0 {
+            tracing::info!("🔥 quinn-udp::unix::recv (apple_slow) 故意触发 NotConnected 错误");
+            return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
+        }
+    }
+    
     let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
@@ -585,13 +631,17 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
         if n == -1 {
             let e = io::Error::last_os_error();
+            tracing::info!("❌ quinn-udp::unix::recv (apple_slow) 错误: {:?}", e);
+            
+            if e.kind() == io::ErrorKind::NotConnected {
+                tracing::info!("❌ quinn-udp::unix::recv (apple_slow) NotConnected 错误");
+            }
+            
             if e.kind() == io::ErrorKind::Interrupted {
+                tracing::info!("🔄 quinn-udp::unix::recv (apple_slow) 被中断，重试");
                 continue;
             }
             return Err(e);
-        }
-        if hdr.msg_flags & libc::MSG_TRUNC != 0 {
-            continue;
         }
         break n;
     };

@@ -74,13 +74,18 @@ impl AsyncUdpSocket for UdpSocket {
         bufs: &mut [std::io::IoSliceMut<'_>],
         meta: &mut [udp::RecvMeta],
     ) -> Poll<io::Result<usize>> {
+        tracing::info!("🔄 TokioUdpSocket::poll_recv");
         loop {
+            tracing::info!("🔄 TokioUdpSocket::poll_recv 等待就绪");
             ready!(self.io.poll_recv_ready(cx))?;
+            tracing::info!("🔄 TokioUdpSocket::poll_recv 尝试接收数据");
             if let Ok(res) = self.io.try_io(Interest::READABLE, || {
                 self.inner.recv((&self.io).into(), bufs, meta)
             }) {
+                tracing::info!("✅ TokioUdpSocket::poll_recv 成功接收 {} 条消息", res);
                 return Poll::Ready(Ok(res));
             }
+            tracing::info!("⚠️ TokioUdpSocket::poll_recv 接收失败，重试");
         }
     }
 

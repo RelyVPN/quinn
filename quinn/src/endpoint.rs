@@ -360,6 +360,7 @@ impl Future for EndpointDriver {
     type Output = Result<(), io::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        tracing::info!("🔄 EndpointDriver::poll");
         let mut endpoint = self.0.state.lock().unwrap();
         if endpoint.driver.is_none() {
             endpoint.driver = Some(cx.waker().clone());
@@ -367,7 +368,17 @@ impl Future for EndpointDriver {
 
         let now = endpoint.runtime.now();
         let mut keep_going = false;
-        keep_going |= endpoint.drive_recv(cx, now)?;
+        
+        match endpoint.drive_recv(cx, now) {
+            Ok(result) => {
+                keep_going |= result;
+            },
+            Err(e) => {
+                tracing::info!("❌ EndpointDriver::poll 错误: {:?}", e);
+                return Poll::Ready(Err(e));
+            }
+        }
+        
         keep_going |= endpoint.handle_events(cx, &self.0.shared);
 
         if !endpoint.recv_state.incoming.is_empty() {
@@ -375,15 +386,14 @@ impl Future for EndpointDriver {
         }
 
         if endpoint.ref_count == 0 && endpoint.recv_state.connections.is_empty() {
+            tracing::info!("✅ EndpointDriver::poll 完成");
             Poll::Ready(Ok(()))
         } else {
             drop(endpoint);
-            // If there is more work to do schedule the endpoint task again.
-            // `wake_by_ref()` is called outside the lock to minimize
-            // lock contention on a multithreaded runtime.
             if keep_going {
                 cx.waker().wake_by_ref();
             }
+            tracing::info!("⏸️ EndpointDriver::poll 挂起");
             Poll::Pending
         }
     }
@@ -391,11 +401,10 @@ impl Future for EndpointDriver {
 
 impl Drop for EndpointDriver {
     fn drop(&mut self) {
+        tracing::info!("💥 EndpointDriver::drop");
         let mut endpoint = self.0.state.lock().unwrap();
         endpoint.driver_lost = true;
         self.0.shared.incoming.notify_waiters();
-        // Drop all outgoing channels, signaling the termination of the endpoint to the associated
-        // connections.
         endpoint.recv_state.connections.senders.clear();
     }
 }
@@ -486,59 +495,98 @@ pub(crate) struct Shared {
 
 impl State {
     fn drive_recv(&mut self, cx: &mut Context, now: Instant) -> Result<bool, io::Error> {
+        tracing::info!("🔄 State::drive_recv");
         let get_time = || self.runtime.now();
         self.recv_state.recv_limiter.start_cycle(get_time);
         if let Some(socket) = &self.prev_socket {
+            tracing::info!("🔄 State::drive_recv 处理 prev_socket");
             // We don't care about the `PollProgress` from old sockets.
             let poll_res =
                 self.recv_state
                     .poll_socket(cx, &mut self.inner, &**socket, &*self.runtime, now);
             if poll_res.is_err() {
+                tracing::info!("❌ State::drive_recv prev_socket 错误");
                 self.prev_socket = None;
             }
         };
+        
+        tracing::info!("🔄 State::drive_recv 处理主 socket");
         let poll_res =
             self.recv_state
                 .poll_socket(cx, &mut self.inner, &*self.socket, &*self.runtime, now);
         self.recv_state.recv_limiter.finish_cycle(get_time);
+        
+        match &poll_res {
+            Ok(_) => {
+                tracing::info!("✅ State::drive_recv poll_socket 成功");
+            },
+            Err(e) => {
+                tracing::info!("❌ State::drive_recv poll_socket 错误: {:?}", e);
+                if e.kind() == io::ErrorKind::NotConnected {
+                    tracing::info!("❌ State::drive_recv NotConnected 错误");
+                }
+            }
+        }
+        
         let poll_res = poll_res?;
         if poll_res.received_connection_packet {
             // Traffic has arrived on self.socket, therefore there is no need for the abandoned
             // one anymore. TODO: Account for multiple outgoing connections.
             self.prev_socket = None;
         }
+        
+        tracing::info!("✅ State::drive_recv 完成");
         Ok(poll_res.keep_going)
     }
 
     fn handle_events(&mut self, cx: &mut Context, shared: &Shared) -> bool {
+        tracing::info!("🔄 State::handle_events");
+        let mut loop_count = 0;
         for _ in 0..IO_LOOP_BOUND {
+            loop_count += 1;
+            tracing::info!("🔄 State::handle_events 循环 #{}", loop_count);
+            
             let (ch, event) = match self.events.poll_recv(cx) {
-                Poll::Ready(Some(x)) => x,
-                Poll::Ready(None) => unreachable!("EndpointInner owns one sender"),
+                Poll::Ready(Some(x)) => {
+                    tracing::info!("🔄 State::handle_events 收到事件");
+                    x
+                },
+                Poll::Ready(None) => {
+                    tracing::info!("❌ State::handle_events 收到 None");
+                    unreachable!("EndpointInner owns one sender");
+                },
                 Poll::Pending => {
+                    tracing::info!("⏸️ State::handle_events 没有更多事件");
                     return false;
                 }
             };
 
             if event.is_drained() {
+                tracing::info!("🔄 State::handle_events 连接已耗尽");
                 self.recv_state.connections.senders.remove(&ch);
                 if self.recv_state.connections.is_empty() {
                     shared.idle.notify_waiters();
                 }
             }
+            
+            tracing::info!("🔄 State::handle_events 处理事件");
             let Some(event) = self.inner.handle_event(ch, event) else {
+                tracing::info!("⏭️ State::handle_events 跳过事件");
                 continue;
             };
-            // Ignoring errors from dropped connections that haven't yet been cleaned up
-            let _ = self
-                .recv_state
-                .connections
-                .senders
-                .get_mut(&ch)
-                .unwrap()
-                .send(ConnectionEvent::Proto(event));
+            
+            tracing::info!("🔄 State::handle_events 发送事件");
+            let sender = self.recv_state.connections.senders.get_mut(&ch);
+            if let Some(sender) = sender {
+                if let Err(e) = sender.send(ConnectionEvent::Proto(event)) {
+                    tracing::info!("❌ State::handle_events 发送失败: {:?}", e);
+                }
+            } else {
+                tracing::info!("❌ State::handle_events 找不到连接");
+            }
         }
 
+        tracing::info!("✅ State::handle_events 完成");
         true
     }
 }
@@ -769,6 +817,7 @@ impl RecvState {
         runtime: &dyn Runtime,
         now: Instant,
     ) -> Result<PollProgress, io::Error> {
+        tracing::info!("🔄 RecvState::poll_socket");
         let mut received_connection_packet = false;
         let mut metas = [RecvMeta::default(); BATCH_SIZE];
         let mut iovs: [IoSliceMut; BATCH_SIZE] = {
@@ -782,15 +831,23 @@ impl RecvState {
             // exactly BATCH_SIZE times.
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
+        
+        let mut loop_count = 0;
         loop {
+            loop_count += 1;
+            tracing::info!("🔄 RecvState::poll_socket 循环 #{}", loop_count);
+            
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
                 Poll::Ready(Ok(msgs)) => {
+                    tracing::info!("🔄 RecvState::poll_socket 收到 {} 条消息", msgs);
                     self.recv_limiter.record_work(msgs);
-                    for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
+                    for (i, (meta, buf)) in metas.iter().zip(iovs.iter()).take(msgs).enumerate() {
+                        tracing::info!("🔄 RecvState::poll_socket 处理消息 #{}", i + 1);
                         let mut data: BytesMut = buf[0..meta.len].into();
                         while !data.is_empty() {
                             let buf = data.split_to(meta.stride.min(data.len()));
                             let mut response_buffer = Vec::new();
+                            tracing::info!("🔄 RecvState::poll_socket 处理数据包");
                             match endpoint.handle(
                                 now,
                                 meta.addr,
@@ -800,48 +857,60 @@ impl RecvState {
                                 &mut response_buffer,
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
+                                    tracing::info!("🔄 RecvState::poll_socket 新连接");
                                     if self.connections.close.is_none() {
                                         self.incoming.push_back(incoming);
                                     } else {
+                                        tracing::info!("🔄 RecvState::poll_socket 拒绝连接");
                                         let transmit =
                                             endpoint.refuse(incoming, &mut response_buffer);
                                         respond(transmit, &response_buffer, socket);
                                     }
                                 }
                                 Some(DatagramEvent::ConnectionEvent(handle, event)) => {
-                                    // Ignoring errors from dropped connections that haven't yet been cleaned up
+                                    tracing::info!("🔄 RecvState::poll_socket 连接事件");
                                     received_connection_packet = true;
-                                    let _ = self
-                                        .connections
-                                        .senders
-                                        .get_mut(&handle)
-                                        .unwrap()
-                                        .send(ConnectionEvent::Proto(event));
+                                    let sender = self.connections.senders.get_mut(&handle);
+                                    if let Some(sender) = sender {
+                                        if let Err(e) = sender.send(ConnectionEvent::Proto(event)) {
+                                            tracing::info!("❌ RecvState::poll_socket 发送失败: {:?}", e);
+                                        }
+                                    } else {
+                                        tracing::info!("❌ RecvState::poll_socket 找不到连接");
+                                    }
                                 }
                                 Some(DatagramEvent::Response(transmit)) => {
+                                    tracing::info!("🔄 RecvState::poll_socket 发送响应");
                                     respond(transmit, &response_buffer, socket);
                                 }
-                                None => {}
+                                None => {
+                                    tracing::info!("⏭️ RecvState::poll_socket 跳过数据包");
+                                }
                             }
                         }
                     }
                 }
                 Poll::Pending => {
+                    tracing::info!("⏸️ RecvState::poll_socket 等待数据");
                     return Ok(PollProgress {
                         received_connection_packet,
                         keep_going: false,
                     });
                 }
-                // Ignore ECONNRESET as it's undefined in QUIC and may be injected by an
-                // attacker
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
+                    tracing::info!("⏭️ RecvState::poll_socket 忽略 ConnectionReset");
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
+                    tracing::info!("❌ RecvState::poll_socket 错误: {:?}", e);
+                    if e.kind() == io::ErrorKind::NotConnected {
+                        tracing::info!("❌ RecvState::poll_socket NotConnected 错误");
+                    }
                     return Err(e);
                 }
             }
             if !self.recv_limiter.allow_work(|| runtime.now()) {
+                tracing::info!("⏸️ RecvState::poll_socket 达到工作限制");
                 return Ok(PollProgress {
                     received_connection_packet,
                     keep_going: true,
