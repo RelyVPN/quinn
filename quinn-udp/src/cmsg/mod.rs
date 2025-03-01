@@ -1,7 +1,6 @@
 use std::{
     ffi::{c_int, c_uchar},
     mem, ptr,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[cfg(unix)]

@@ -494,11 +494,6 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
     }
     
-    // 记录处理的消息数量
-    if msg_count > 0 {
-        eprintln!("📦 recv 处理了 {} 条消息", msg_count);
-    }
-    
     Ok(msg_count as usize)
 }
 
