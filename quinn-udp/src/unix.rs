@@ -459,59 +459,42 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
 
 #[cfg(not(any(apple, target_os = "openbsd", target_os = "netbsd", solarish)))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
-    tracing::info!("🔄 quinn-udp::unix::recv");
+    let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
+    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
+    let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
+    let max_msg_count = bufs.len().min(BATCH_SIZE);
+    for i in 0..max_msg_count {
+        prepare_recv(
+            &mut bufs[i],
+            &mut names[i],
+            &mut ctrls[i],
+            &mut hdrs[i].msg_hdr,
+        );
+    }
+    let msg_count = loop {
+        let n = unsafe {
+            libc::recvmmsg(
+                io.as_raw_fd(),
+                hdrs.as_mut_ptr(),
+                bufs.len().min(BATCH_SIZE) as _,
+                0,
+                ptr::null_mut::<libc::timespec>(),
+            )
+        };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        break n;
+    };
+    for i in 0..(msg_count as usize) {
+        meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
+    }
     
-    // 必然触发 NotConnected 错误（错误码 57）
-    tracing::info!("🔥 quinn-udp::unix::recv 必然触发 NotConnected 错误");
-    return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
-    
-    // 以下代码不会执行，但保留以便将来可能需要恢复
-    // let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
-    // let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
-    // let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
-    // let max_msg_count = bufs.len().min(BATCH_SIZE);
-    // for i in 0..max_msg_count {
-    //     prepare_recv(
-    //         &mut bufs[i],
-    //         &mut names[i],
-    //         &mut ctrls[i],
-    //         &mut hdrs[i].msg_hdr,
-    //     );
-    // }
-    // let msg_count = loop {
-    //     tracing::info!("🔄 quinn-udp::unix::recv 调用 recvmmsg");
-    //     let n = unsafe {
-    //         libc::recvmmsg(
-    //             io.as_raw_fd(),
-    //             hdrs.as_mut_ptr(),
-    //             bufs.len().min(BATCH_SIZE) as _,
-    //             0,
-    //             ptr::null_mut::<libc::timespec>(),
-    //         )
-    //     };
-    //     if n == -1 {
-    //         let e = io::Error::last_os_error();
-    //         tracing::info!("❌ quinn-udp::unix::recv 错误: {:?}", e);
-    //         
-    //         if e.kind() == io::ErrorKind::NotConnected {
-    //             tracing::info!("❌ quinn-udp::unix::recv NotConnected 错误");
-    //         }
-    //         
-    //         if e.kind() == io::ErrorKind::Interrupted {
-    //             tracing::info!("🔄 quinn-udp::unix::recv 被中断，重试");
-    //             continue;
-    //         }
-    //         return Err(e);
-    //     }
-    //     tracing::info!("🔄 quinn-udp::unix::recv 成功接收 {} 条消息", n);
-    //     break n;
-    // };
-    // for i in 0..(msg_count as usize) {
-    //     meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
-    // }
-    // 
-    // tracing::info!("✅ quinn-udp::unix::recv 完成");
-    // Ok(msg_count as usize)
+    Ok(msg_count as usize)
 }
 
 #[cfg(apple_fast)]
@@ -522,117 +505,98 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     static RMSG_COUNT: AtomicUsize = AtomicUsize::new(0);
     static RMSG_ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
     
-    tracing::info!("🔄 quinn-udp::unix::recv (apple_fast)");
+    let recv_id = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    let rmsg_start = RMSG_COUNT.load(Ordering::Relaxed);
     
-    // 必然触发 NotConnected 错误（错误码 57）
-    let call_count = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    tracing::info!("🔥 quinn-udp::unix::recv (apple_fast) 必然触发 NotConnected 错误");
-    return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
+    // 简化日志
+    eprintln!("RECV#{} 开始", recv_id);
     
-    // 以下代码不会执行，但保留以便将来可能需要恢复
-    // let recv_id = RECV_CALL_COUNT.load(Ordering::Relaxed);
-    // let rmsg_start = RMSG_COUNT.load(Ordering::Relaxed);
+    let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
+    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
+    let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
+    let max_msg_count = bufs.len().min(BATCH_SIZE);
     
-    // // 简化日志
-    // eprintln!("RECV#{} 开始", recv_id);
+    for i in 0..max_msg_count {
+        prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
+    }
     
-    // let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
-    // let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
-    // let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
-    // let max_msg_count = bufs.len().min(BATCH_SIZE);
+    let msg_count = loop {
+        let rmsg_id = RMSG_COUNT.fetch_add(1, Ordering::Relaxed);
+        eprintln!("RMSG#{} 调用 [RECV#{}]", rmsg_id, recv_id);
+        
+        let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
+        
+        eprintln!("RMSG#{} 返回 {}", rmsg_id, n);
+        
+        match n {
+            -1 => {
+                let e = io::Error::last_os_error();
+                let error_count = RMSG_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
+                
+                // 添加详细的错误日志
+                eprintln!("❌ RMSG#{} 错误: {:?} (kind={:?}, code={:?}) [总错误数: {}]", 
+                          rmsg_id, e, e.kind(), e.raw_os_error(), error_count + 1);
+                
+                if e.kind() == io::ErrorKind::Interrupted {
+                    eprintln!("⚠️ RMSG#{} 被中断，继续尝试", rmsg_id);
+                    continue;
+                }
+                
+                eprintln!("🛑 RMSG#{} 返回错误: {:?}", rmsg_id, e);
+                return Err(e);
+            }
+            n => break n,
+        }
+    };
     
-    // for i in 0..max_msg_count {
-    //     prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
-    // }
+    for i in 0..(msg_count as usize) {
+        meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
+    }
     
-    // let msg_count = loop {
-    //     let rmsg_id = RMSG_COUNT.fetch_add(1, Ordering::Relaxed);
-    //     eprintln!("RMSG#{} 调用 [RECV#{}]", rmsg_id, recv_id);
-    //     
-    //     let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
-    //     
-    //     eprintln!("RMSG#{} 返回 {}", rmsg_id, n);
-    //     
-    //     match n {
-    //         -1 => {
-    //             let e = io::Error::last_os_error();
-    //             let error_count = RMSG_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
-    //             
-    //             // 添加详细的错误日志
-    //             eprintln!("❌ RMSG#{} 错误: {:?} (kind={:?}, code={:?}) [总错误数: {}]", 
-    //                       rmsg_id, e, e.kind(), e.raw_os_error(), error_count + 1);
-    //             
-    //             if e.kind() == io::ErrorKind::Interrupted {
-    //                 eprintln!("⚠️ RMSG#{} 被中断，继续尝试", rmsg_id);
-    //                 continue;
-    //             }
-    //             
-    //             eprintln!("🛑 RMSG#{} 返回错误: {:?}", rmsg_id, e);
-    //             return Err(e);
-    //         }
-    //         n => break n,
-    //     }
-    // };
-    // 
-    // for i in 0..(msg_count as usize) {
-    //     meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
-    // }
-    // 
-    // let rmsg_end = RMSG_COUNT.load(Ordering::Relaxed);
-    // let rmsg_calls = rmsg_end - rmsg_start;
-    // 
-    // // 简化日志，重点关注调用比例
-    // eprintln!("RECV#{} 完成: 调用了 {} 次 RMSG, 结果: {}{}",
-    //           recv_id, rmsg_calls, msg_count,
-    //           if rmsg_calls > 1 { " ⚠️多次调用⚠️" } else { "" });
-    // 
-    // // 每100次调用输出一次统计
-    // if recv_id % 100 == 0 {
-    //     let error_count = RMSG_ERROR_COUNT.load(Ordering::Relaxed);
-    //     eprintln!("📈 统计: RECV={}, RMSG={}, 错误={}, 比例={:.3}, 错误率={:.3}%", 
-    //               recv_id, 
-    //               RMSG_COUNT.load(Ordering::Relaxed),
-    //               error_count,
-    //               RMSG_COUNT.load(Ordering::Relaxed) as f64 / recv_id as f64,
-    //               error_count as f64 * 100.0 / RMSG_COUNT.load(Ordering::Relaxed) as f64);
-    // }
-    // 
-    // Ok(msg_count as usize)
+    let rmsg_end = RMSG_COUNT.load(Ordering::Relaxed);
+    let rmsg_calls = rmsg_end - rmsg_start;
+    
+    // 简化日志，重点关注调用比例
+    eprintln!("RECV#{} 完成: 调用了 {} 次 RMSG, 结果: {}{}",
+              recv_id, rmsg_calls, msg_count,
+              if rmsg_calls > 1 { " ⚠️多次调用⚠️" } else { "" });
+    
+    // 每100次调用输出一次统计
+    if recv_id % 100 == 0 {
+        let error_count = RMSG_ERROR_COUNT.load(Ordering::Relaxed);
+        eprintln!("📈 统计: RECV={}, RMSG={}, 错误={}, 比例={:.3}, 错误率={:.3}%", 
+                  recv_id, 
+                  RMSG_COUNT.load(Ordering::Relaxed),
+                  error_count,
+                  RMSG_COUNT.load(Ordering::Relaxed) as f64 / recv_id as f64,
+                  error_count as f64 * 100.0 / RMSG_COUNT.load(Ordering::Relaxed) as f64);
+    }
+    
+    Ok(msg_count as usize)
 }
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", solarish, apple_slow))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
-    tracing::info!("🔄 quinn-udp::unix::recv (apple_slow)");
-    
-    // 必然触发 NotConnected 错误（错误码 57）
-    tracing::info!("🔥 quinn-udp::unix::recv (apple_slow) 必然触发 NotConnected 错误");
-    return Err(io::Error::from_raw_os_error(57)); // ENOTCONN
-    
-    // 以下代码不会执行，但保留以便将来可能需要恢复
-    // let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
-    // let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
-    // let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
-    // prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
-    // let n = loop {
-    //     let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
-    //     if n == -1 {
-    //         let e = io::Error::last_os_error();
-    //         tracing::info!("❌ quinn-udp::unix::recv (apple_slow) 错误: {:?}", e);
-    //         
-    //         if e.kind() == io::ErrorKind::NotConnected {
-    //             tracing::info!("❌ quinn-udp::unix::recv (apple_slow) NotConnected 错误");
-    //         }
-    //         
-    //         if e.kind() == io::ErrorKind::Interrupted {
-    //             tracing::info!("🔄 quinn-udp::unix::recv (apple_slow) 被中断，重试");
-    //             continue;
-    //         }
-    //         return Err(e);
-    //     }
-    //     break n;
-    // };
-    // meta[0] = decode_recv(&name, &hdr, n as usize);
-    // Ok(1)
+    let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
+    let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
+    let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
+    prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
+    let n = loop {
+        let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if hdr.msg_flags & libc::MSG_TRUNC != 0 {
+            continue;
+        }
+        break n;
+    };
+    meta[0] = decode_recv(&name, &hdr, n as usize);
+    Ok(1)
 }
 
 const CMSG_LEN: usize = 88;
