@@ -74,32 +74,31 @@ impl AsyncUdpSocket for UdpSocket {
         bufs: &mut [std::io::IoSliceMut<'_>],
         meta: &mut [udp::RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        tracing::info!("🔄 TokioUdpSocket::poll_recv");
         loop {
-            tracing::info!("🔄 TokioUdpSocket::poll_recv 等待就绪");
-            // 等待套接字就绪
             ready!(self.io.poll_recv_ready(cx))?;
             
-            tracing::info!("🔄 TokioUdpSocket::poll_recv 尝试接收数据");
-            // 尝试接收数据
             match self.io.try_io(Interest::READABLE, || {
                 self.inner.recv((&self.io).into(), bufs, meta)
             }) {
-                // 成功接收数据
                 Ok(res) => {
-                    tracing::info!("✅ TokioUdpSocket::poll_recv 成功接收 {} 条消息", res);
                     return Poll::Ready(Ok(res));
                 }
                 
-                // 处理错误情况
                 Err(e) => {
-                    // 对于 NotConnected 错误，直接返回错误，不再重试
-                    // 这类错误是永久性的，重试也无法解决
-                    if e.kind() == io::ErrorKind::NotConnected {
-                        tracing::info!("🛑 TokioUdpSocket::poll_recv 遇到 NotConnected 错误，停止重试: {:?}", e);
-                        return Poll::Ready(Err(e));
+                    match e.kind() {
+                        io::ErrorKind::NotConnected |
+                        io::ErrorKind::ConnectionReset |
+                        io::ErrorKind::ConnectionAborted |
+                        io::ErrorKind::BrokenPipe |
+                        io::ErrorKind::PermissionDenied |
+                        io::ErrorKind::NetworkDown |
+                        io::ErrorKind::NetworkUnreachable |
+                        io::ErrorKind::HostUnreachable |
+                        io::ErrorKind::Unsupported => {
+                            return Poll::Ready(Err(e));
+                        }
+                        _ => {}
                     }
-                    tracing::info!("⚠️ TokioUdpSocket::poll_recv 接收失败，重试: {:?}", e);
                 }
             }
         }
