@@ -499,18 +499,6 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
 
 #[cfg(apple_fast)]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    // 只保留必要的计数器
-    static RECV_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static RMSG_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static RMSG_ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
-    
-    let recv_id = RECV_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    let rmsg_start = RMSG_COUNT.load(Ordering::Relaxed);
-    
-    // 简化日志
-    eprintln!("RECV#{} 开始", recv_id);
-    
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
     let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
@@ -521,28 +509,14 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     }
     
     let msg_count = loop {
-        let rmsg_id = RMSG_COUNT.fetch_add(1, Ordering::Relaxed);
-        eprintln!("RMSG#{} 调用 [RECV#{}]", rmsg_id, recv_id);
-        
         let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
-        
-        eprintln!("RMSG#{} 返回 {}", rmsg_id, n);
         
         match n {
             -1 => {
                 let e = io::Error::last_os_error();
-                let error_count = RMSG_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
-                
-                // 添加详细的错误日志
-                eprintln!("❌ RMSG#{} 错误: {:?} (kind={:?}, code={:?}) [总错误数: {}]", 
-                          rmsg_id, e, e.kind(), e.raw_os_error(), error_count + 1);
-                
                 if e.kind() == io::ErrorKind::Interrupted {
-                    eprintln!("⚠️ RMSG#{} 被中断，继续尝试", rmsg_id);
                     continue;
                 }
-                
-                eprintln!("🛑 RMSG#{} 返回错误: {:?}", rmsg_id, e);
                 return Err(e);
             }
             n => break n,
@@ -551,25 +525,6 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
-    }
-    
-    let rmsg_end = RMSG_COUNT.load(Ordering::Relaxed);
-    let rmsg_calls = rmsg_end - rmsg_start;
-    
-    // 简化日志，重点关注调用比例
-    eprintln!("RECV#{} 完成: 调用了 {} 次 RMSG, 结果: {}{}",
-              recv_id, rmsg_calls, msg_count,
-              if rmsg_calls > 1 { " ⚠️多次调用⚠️" } else { "" });
-    
-    // 每100次调用输出一次统计
-    if recv_id % 100 == 0 {
-        let error_count = RMSG_ERROR_COUNT.load(Ordering::Relaxed);
-        eprintln!("📈 统计: RECV={}, RMSG={}, 错误={}, 比例={:.3}, 错误率={:.3}%", 
-                  recv_id, 
-                  RMSG_COUNT.load(Ordering::Relaxed),
-                  error_count,
-                  RMSG_COUNT.load(Ordering::Relaxed) as f64 / recv_id as f64,
-                  error_count as f64 * 100.0 / RMSG_COUNT.load(Ordering::Relaxed) as f64);
     }
     
     Ok(msg_count as usize)

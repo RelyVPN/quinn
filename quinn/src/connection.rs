@@ -1055,26 +1055,20 @@ impl State {
         shared: &Shared,
         cx: &mut Context,
     ) -> Result<(), ConnectionError> {
-        tracing::info!("🔄 Connection::process_conn_events");
         loop {
-            tracing::info!("🔄 Connection::process_conn_events 轮询事件");
             match self.conn_events.poll_recv(cx) {
                 Poll::Ready(Some(ConnectionEvent::Rebind(socket))) => {
-                    tracing::info!("🔄 Connection::process_conn_events 处理 Rebind 事件");
                     self.socket = socket;
                     self.io_poller = self.socket.clone().create_io_poller();
                     self.inner.local_address_changed();
                 }
                 Poll::Ready(Some(ConnectionEvent::Proto(event))) => {
-                    tracing::info!("🔄 Connection::process_conn_events 处理 Proto 事件");
                     self.inner.handle_event(event);
                 }
                 Poll::Ready(Some(ConnectionEvent::Close { reason, error_code })) => {
-                    tracing::info!("🔄 Connection::process_conn_events 处理 Close 事件");
                     self.close(error_code, reason, shared);
                 }
                 Poll::Ready(None) => {
-                    tracing::info!("❌ Connection::process_conn_events 收到 None");
                     return Err(ConnectionError::TransportError(proto::TransportError {
                         code: proto::TransportErrorCode::INTERNAL_ERROR,
                         frame: None,
@@ -1082,7 +1076,6 @@ impl State {
                     }));
                 }
                 Poll::Pending => {
-                    tracing::info!("⏸️ Connection::process_conn_events 没有更多事件");
                     return Ok(());
                 }
             }
@@ -1090,25 +1083,21 @@ impl State {
     }
 
     fn forward_app_events(&mut self, shared: &Shared) {
-        tracing::info!("🔄 Connection::forward_app_events");
         while let Some(event) = self.inner.poll() {
             use proto::Event::*;
             match event {
                 HandshakeDataReady => {
-                    tracing::info!("🔄 Connection::forward_app_events HandshakeDataReady");
                     if let Some(x) = self.on_handshake_data.take() {
                         let _ = x.send(());
                     }
                 }
                 Connected => {
-                    tracing::info!("🔄 Connection::forward_app_events Connected");
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
                         // We don't care if the on-connected future was dropped
                         let _ = x.send(self.inner.accepted_0rtt());
                     }
                     if self.inner.side().is_client() && !self.inner.accepted_0rtt() {
-                        tracing::info!("🔄 Connection::forward_app_events 0-RTT 被拒绝");
                         // Wake up rejected 0-RTT streams so they can fail immediately with
                         // `ZeroRttRejected` errors.
                         wake_all(&mut self.blocked_writers);
@@ -1117,60 +1106,41 @@ impl State {
                     }
                 }
                 ConnectionLost { reason } => {
-                    tracing::info!("❌ Connection::forward_app_events ConnectionLost: {:?}", reason);
                     self.terminate(reason, shared);
                 }
-                Stream(StreamEvent::Writable { id }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Writable: {:?}", id);
-                    wake_stream(id, &mut self.blocked_writers);
-                }
+                Stream(StreamEvent::Writable { id }) => wake_stream(id, &mut self.blocked_writers),
                 Stream(StreamEvent::Opened { dir: Dir::Uni }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Opened Uni");
                     shared.stream_incoming[Dir::Uni as usize].notify_waiters();
                 }
                 Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Opened Bi");
                     shared.stream_incoming[Dir::Bi as usize].notify_waiters();
                 }
                 DatagramReceived => {
-                    tracing::info!("🔄 Connection::forward_app_events DatagramReceived");
                     shared.datagram_received.notify_waiters();
                 }
                 DatagramsUnblocked => {
-                    tracing::info!("🔄 Connection::forward_app_events DatagramsUnblocked");
                     shared.datagrams_unblocked.notify_waiters();
                 }
-                Stream(StreamEvent::Readable { id }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Readable: {:?}", id);
-                    wake_stream(id, &mut self.blocked_readers);
-                }
+                Stream(StreamEvent::Readable { id }) => wake_stream(id, &mut self.blocked_readers),
                 Stream(StreamEvent::Available { dir }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Available: {:?}", dir);
                     // Might mean any number of streams are ready, so we wake up everyone
                     shared.stream_budget_available[dir as usize].notify_waiters();
                 }
-                Stream(StreamEvent::Finished { id }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Finished: {:?}", id);
-                    wake_stream(id, &mut self.stopped);
-                }
+                Stream(StreamEvent::Finished { id }) => wake_stream(id, &mut self.stopped),
                 Stream(StreamEvent::Stopped { id, .. }) => {
-                    tracing::info!("🔄 Connection::forward_app_events Stream Stopped: {:?}", id);
                     wake_stream(id, &mut self.stopped);
                     wake_stream(id, &mut self.blocked_writers);
                 }
             }
         }
-        tracing::info!("✅ Connection::forward_app_events 完成");
     }
 
     fn drive_timer(&mut self, cx: &mut Context) -> bool {
-        tracing::info!("🔄 Connection::drive_timer");
         // Check whether we need to (re)set the timer. If so, we must poll again to ensure the
         // timer is registered with the runtime (and check whether it's already
         // expired).
         match self.inner.poll_timeout() {
             Some(deadline) => {
-                tracing::info!("🔄 Connection::drive_timer 设置定时器");
                 if let Some(delay) = &mut self.timer {
                     // There is no need to reset the tokio timer if the deadline
                     // did not change
@@ -1179,25 +1149,21 @@ impl State {
                         .map(|current_deadline| current_deadline != deadline)
                         .unwrap_or(true)
                     {
-                        tracing::info!("🔄 Connection::drive_timer 重置定时器");
                         delay.as_mut().reset(deadline);
                     }
                 } else {
-                    tracing::info!("🔄 Connection::drive_timer 创建新定时器");
                     self.timer = Some(self.runtime.new_timer(deadline));
                 }
                 // Store the actual expiration time of the timer
                 self.timer_deadline = Some(deadline);
             }
             None => {
-                tracing::info!("🔄 Connection::drive_timer 无需定时器");
                 self.timer_deadline = None;
                 return false;
             }
         }
 
         if self.timer_deadline.is_none() {
-            tracing::info!("🔄 Connection::drive_timer 定时器已清除");
             return false;
         }
 
@@ -1207,7 +1173,6 @@ impl State {
             .expect("timer must exist in this state")
             .as_mut();
         if delay.poll(cx).is_pending() {
-            tracing::info!("⏸️ Connection::drive_timer 定时器未到期");
             // Since there wasn't a timeout event, there is nothing new
             // for the connection to do
             return false;
@@ -1215,57 +1180,40 @@ impl State {
 
         // A timer expired, so the caller needs to check for
         // new transmits, which might cause new timers to be set.
-        tracing::info!("🔄 Connection::drive_timer 定时器已到期");
         self.inner.handle_timeout(self.runtime.now());
         self.timer_deadline = None;
-        tracing::info!("✅ Connection::drive_timer 完成");
         true
     }
 
     /// Wake up a blocked `Driver` task to process I/O
     pub(crate) fn wake(&mut self) {
-        tracing::info!("🔄 Connection::wake");
         if let Some(x) = self.driver.take() {
-            tracing::info!("🔄 Connection::wake 唤醒驱动任务");
             x.wake();
         }
     }
 
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
-        tracing::info!("❌ Connection::terminate 原因: {:?}", reason);
         self.error = Some(reason.clone());
         if let Some(x) = self.on_handshake_data.take() {
-            tracing::info!("🔄 Connection::terminate 通知握手数据就绪");
             let _ = x.send(());
         }
-        tracing::info!("🔄 Connection::terminate 唤醒所有阻塞的写入器");
         wake_all(&mut self.blocked_writers);
-        tracing::info!("🔄 Connection::terminate 唤醒所有阻塞的读取器");
         wake_all(&mut self.blocked_readers);
-        tracing::info!("🔄 Connection::terminate 通知流预算可用");
         shared.stream_budget_available[Dir::Uni as usize].notify_waiters();
         shared.stream_budget_available[Dir::Bi as usize].notify_waiters();
-        tracing::info!("🔄 Connection::terminate 通知流到达");
         shared.stream_incoming[Dir::Uni as usize].notify_waiters();
         shared.stream_incoming[Dir::Bi as usize].notify_waiters();
-        tracing::info!("🔄 Connection::terminate 通知数据报接收");
         shared.datagram_received.notify_waiters();
-        tracing::info!("🔄 Connection::terminate 通知数据报解除阻塞");
         shared.datagrams_unblocked.notify_waiters();
         if let Some(x) = self.on_connected.take() {
-            tracing::info!("🔄 Connection::terminate 通知连接失败");
             let _ = x.send(false);
         }
-        tracing::info!("🔄 Connection::terminate 唤醒所有已停止的流");
         wake_all(&mut self.stopped);
-        tracing::info!("🔄 Connection::terminate 通知连接关闭");
         shared.closed.notify_waiters();
-        tracing::info!("✅ Connection::terminate 完成");
     }
 
     fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {
-        tracing::info!("🔄 Connection::close error_code={}, reason_len={}", error_code, reason.len());
         self.inner.close(self.runtime.now(), error_code, reason);
         self.terminate(ConnectionError::LocallyClosed, shared);
         self.wake();
@@ -1273,20 +1221,16 @@ impl State {
 
     /// Close for a reason other than the application's explicit request
     pub(crate) fn implicit_close(&mut self, shared: &Shared) {
-        tracing::info!("🔄 Connection::implicit_close");
         self.close(0u32.into(), Bytes::new(), shared);
     }
 
     pub(crate) fn check_0rtt(&self) -> Result<(), ()> {
-        tracing::info!("🔄 Connection::check_0rtt");
         if self.inner.is_handshaking()
             || self.inner.accepted_0rtt()
             || self.inner.side().is_server()
         {
-            tracing::info!("✅ Connection::check_0rtt 成功");
             Ok(())
         } else {
-            tracing::info!("❌ Connection::check_0rtt 失败");
             Err(())
         }
     }
@@ -1294,15 +1238,12 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        tracing::info!("🔄 State::drop");
         if !self.inner.is_drained() {
-            tracing::info!("🔄 State::drop 发送 drained 事件");
             // Ensure the endpoint can tidy up
             let _ = self
                 .endpoint_events
                 .send((self.handle, proto::EndpointEvent::drained()));
         }
-        tracing::info!("✅ State::drop 完成");
     }
 }
 
@@ -1314,18 +1255,12 @@ impl fmt::Debug for State {
 
 fn wake_stream(stream_id: StreamId, wakers: &mut FxHashMap<StreamId, Waker>) {
     if let Some(waker) = wakers.remove(&stream_id) {
-        tracing::info!("🔄 wake_stream {:?}", stream_id);
         waker.wake();
     }
 }
 
 fn wake_all(wakers: &mut FxHashMap<StreamId, Waker>) {
-    let count = wakers.len();
-    tracing::info!("🔄 wake_all 唤醒 {} 个等待者", count);
-    wakers.drain().for_each(|(id, waker)| {
-        tracing::info!("🔄 wake_all 唤醒 {:?}", id);
-        waker.wake()
-    })
+    wakers.drain().for_each(|(_, waker)| waker.wake())
 }
 
 /// Errors that can arise when sending a datagram
