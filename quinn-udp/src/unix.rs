@@ -61,6 +61,7 @@ const IPV6_DONTFRAG: libc::c_int = libc::IPV6_DONTFRAG;
 #[cfg(target_os = "freebsd")]
 type IpTosTy = libc::c_uchar;
 #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
+#[allow(dead_code)]
 type IpTosTy = libc::c_int;
 
 /// Tokio-compatible UDP socket with some useful specializations.
@@ -589,9 +590,11 @@ fn prepare_msg(
     #[cfg(not(apple_fast))] hdr: &mut libc::msghdr,
     #[cfg(apple_fast)] hdr: &mut msghdr_x,
     iov: &mut libc::iovec,
+    #[allow(unused_variables)]
     ctrl: &mut cmsg::Aligned<[u8; CMSG_LEN]>,
     #[allow(unused_variables)] // only used on FreeBSD & macOS
     encode_src_ip: bool,
+    #[allow(unused_variables)]
     sendmsg_einval: bool,
 ) {
     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
@@ -609,70 +612,81 @@ fn prepare_msg(
     hdr.msg_iov = iov;
     hdr.msg_iovlen = 1;
 
-    hdr.msg_control = ctrl.0.as_mut_ptr() as _;
-    hdr.msg_controllen = CMSG_LEN as _;
-    let mut encoder = unsafe { cmsg::Encoder::new(hdr) };
-    let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int);
-    // True for IPv4 or IPv4-Mapped IPv6
-    let is_ipv4 = transmit.destination.is_ipv4()
-        || matches!(transmit.destination.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
-    if is_ipv4 {
-        if !sendmsg_einval {
-            #[cfg(not(target_os = "netbsd"))]
-            {
-                encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
-            }
-        }
-    } else {
-        encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
-    }
-
-    // Only set the segment size if it is different from the size of the contents.
-    // Some network drivers don't like being told to do GSO even if there is effectively only a single segment.
-    if let Some(segment_size) = transmit
-        .segment_size
-        .filter(|segment_size| *segment_size != transmit.contents.len())
+    #[cfg(apple_fast)]
     {
-        gso::set_segment_size(&mut encoder, segment_size as u16);
+        // 禁用控制消息 - sendmsg_x 不支持控制消息
+        hdr.msg_control = std::ptr::null_mut();
+        hdr.msg_controllen = 0;
+        return;
     }
 
-    if let Some(ip) = &transmit.src_ip {
-        match ip {
-            IpAddr::V4(v4) => {
-                #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(not(apple_fast))]
+    {
+        hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+        hdr.msg_controllen = CMSG_LEN as _;
+        let mut encoder = unsafe { cmsg::Encoder::new(hdr) };
+        let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int);
+        // True for IPv4 or IPv4-Mapped IPv6
+        let is_ipv4 = transmit.destination.is_ipv4()
+            || matches!(transmit.destination.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
+        if is_ipv4 {
+            if !sendmsg_einval {
+                #[cfg(not(target_os = "netbsd"))]
                 {
-                    let pktinfo = libc::in_pktinfo {
-                        ipi_ifindex: 0,
-                        ipi_spec_dst: libc::in_addr {
-                            s_addr: u32::from_ne_bytes(v4.octets()),
-                        },
-                        ipi_addr: libc::in_addr { s_addr: 0 },
-                    };
-                    encoder.push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo);
+                    encoder.push(libc::IPPROTO_IP, libc::IP_TOS, ecn as IpTosTy);
                 }
-                #[cfg(any(bsd, apple, solarish))]
-                {
-                    if encode_src_ip {
-                        let addr = libc::in_addr {
-                            s_addr: u32::from_ne_bytes(v4.octets()),
+            }
+        } else {
+            encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
+        }
+
+        // Only set the segment size if it is different from the size of the contents.
+        // Some network drivers don't like being told to do GSO even if there is effectively only a single segment.
+        if let Some(segment_size) = transmit
+            .segment_size
+            .filter(|segment_size| *segment_size != transmit.contents.len())
+        {
+            gso::set_segment_size(&mut encoder, segment_size as u16);
+        }
+
+        if let Some(ip) = &transmit.src_ip {
+            match ip {
+                IpAddr::V4(v4) => {
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
+                    {
+                        let pktinfo = libc::in_pktinfo {
+                            ipi_ifindex: 0,
+                            ipi_spec_dst: libc::in_addr {
+                                s_addr: u32::from_ne_bytes(v4.octets()),
+                            },
+                            ipi_addr: libc::in_addr { s_addr: 0 },
                         };
-                        encoder.push(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, addr);
+                        encoder.push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo);
+                    }
+                    #[cfg(any(bsd, apple, solarish))]
+                    {
+                        if encode_src_ip {
+                            let addr = libc::in_addr {
+                                s_addr: u32::from_ne_bytes(v4.octets()),
+                            };
+                            encoder.push(libc::IPPROTO_IP, libc::IP_RECVDSTADDR, addr);
+                        }
                     }
                 }
-            }
-            IpAddr::V6(v6) => {
-                let pktinfo = libc::in6_pktinfo {
-                    ipi6_ifindex: 0,
-                    ipi6_addr: libc::in6_addr {
-                        s6_addr: v6.octets(),
-                    },
-                };
-                encoder.push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo);
+                IpAddr::V6(v6) => {
+                    let pktinfo = libc::in6_pktinfo {
+                        ipi6_ifindex: 0,
+                        ipi6_addr: libc::in6_addr {
+                            s6_addr: v6.octets(),
+                        },
+                    };
+                    encoder.push(libc::IPPROTO_IPV6, libc::IPV6_PKTINFO, pktinfo);
+                }
             }
         }
-    }
 
-    encoder.finish();
+        encoder.finish();
+    }
 }
 
 #[cfg(not(apple_fast))]
@@ -866,7 +880,8 @@ mod gso {
             1
         }
     }
-
+    
+    #[allow(dead_code)]
     pub(super) fn set_segment_size(
         #[cfg(not(apple_fast))] _encoder: &mut cmsg::Encoder<libc::msghdr>,
         #[cfg(apple_fast)] _encoder: &mut cmsg::Encoder<msghdr_x>,
