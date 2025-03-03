@@ -18,12 +18,14 @@ pub(crate) use imp::Aligned;
 ///
 /// The operation must be "finished" for the native msghdr to be usable, either by calling `finish`
 /// explicitly or by dropping the `Encoder`.
+#[allow(dead_code)]
 pub(crate) struct Encoder<'a, M: MsgHdr> {
     hdr: &'a mut M,
     cmsg: Option<&'a mut M::ControlMessage>,
     len: usize,
 }
 
+#[allow(dead_code)]
 impl<'a, M: MsgHdr> Encoder<'a, M> {
     /// # Safety
     /// - `hdr` must contain a suitably aligned pointer to a big enough buffer to hold control messages
