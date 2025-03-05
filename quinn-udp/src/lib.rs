@@ -240,31 +240,3 @@ impl EcnCodepoint {
         })
     }
 }
-
-#[doc(hidden)]
-#[cfg(apple)]
-pub fn __check_features() {
-    #[cfg(apple_fast)]
-    {
-        #[cfg(feature = "tracing")]
-        tracing::info!("🟢🟢🟢 quinn-udp: fast-apple-datapath特性已启用，将使用批量接收API (recvmsg_x) 🟢🟢🟢");
-        
-        #[cfg(feature = "direct-log")]
-        log::info!("🟢🟢🟢 quinn-udp: fast-apple-datapath特性已启用，将使用批量接收API (recvmsg_x) 🟢🟢🟢");
-        
-        #[cfg(not(any(feature = "tracing", feature = "direct-log")))]
-        println!("🟢🟢🟢 quinn-udp: fast-apple-datapath特性已启用，将使用批量接收API (recvmsg_x) 🟢🟢🟢");
-    }
-    
-    #[cfg(apple_slow)]
-    {
-        #[cfg(feature = "tracing")]
-        tracing::warn!("🔴🔴🔴 quinn-udp: fast-apple-datapath特性未启用，将使用标准API (recvmsg) 🔴🔴🔴");
-        
-        #[cfg(feature = "direct-log")]
-        log::warn!("🔴🔴🔴 quinn-udp: fast-apple-datapath特性未启用，将使用标准API (recvmsg) 🔴🔴🔴");
-        
-        #[cfg(not(any(feature = "tracing", feature = "direct-log")))]
-        println!("🔴🔴🔴 quinn-udp: fast-apple-datapath特性未启用，将使用标准API (recvmsg) 🔴🔴🔴");
-    }
-}
