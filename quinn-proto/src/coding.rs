@@ -114,8 +114,22 @@ impl<T: Buf> BufExt for T {
     }
 }
 
-pub(crate) trait BufMutExt {
+/// Extension trait for writing QUIC protocol elements to a buffer
+/// 
+/// This trait extends types implementing `BufMut` with methods for writing QUIC protocol elements.
+/// It provides a higher-level interface for encoding QUIC data structures into byte buffers.
+pub trait BufMutExt {
+    /// Writes a value implementing `Codec` to the buffer
+    /// 
+    /// This method is used throughout the QUIC implementation to write protocol elements 
+    /// like frame types, packet headers, and stream data.
     fn write<T: Codec>(&mut self, x: T);
+
+    /// Writes a u64 value as a variable-length integer to the buffer
+    /// 
+    /// Variable-length integers in QUIC use a two-bit prefix that encodes their length,
+    /// allowing small values to be encoded more efficiently. This is used for stream IDs,
+    /// packet numbers, frame types, and other protocol integers.
     fn write_var(&mut self, x: u64);
 }
 
