@@ -129,12 +129,12 @@ impl PacketSpace {
             self.immediate_ack_pending = true;
         }
 
-        // Retransmit the data of the oldest in-flight packet
         if !self.pending.is_empty(streams) {
             // There's real data to send here, no need to make something up
             return;
         }
 
+        // Retransmit the data of the oldest in-flight packet
         for packet in self.sent_packets.values_mut() {
             if !packet.retransmits.is_empty(streams) {
                 // Remove retransmitted data from the old packet so we don't end up retransmitting
@@ -147,7 +147,9 @@ impl PacketSpace {
         // Nothing new to send and nothing to retransmit, so fall back on a ping. This should only
         // happen in rare cases during the handshake when the server becomes blocked by
         // anti-amplification.
-        self.ping_pending = true;
+        if !self.immediate_ack_pending {
+            self.ping_pending = true;
+        }
     }
 
     /// Get the next outgoing packet number in this space
