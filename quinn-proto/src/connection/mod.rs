@@ -1594,13 +1594,13 @@ impl Connection {
         );
 
         let count = match self.path.in_flight.ack_eliciting {
-            // A PTO when we're not expecting any ACKs must be due to handshake anti-amplification
-            // deadlock preventions
             0 => {
-                debug_assert!(!self.peer_completed_address_validation());
+                if !self.peer_completed_address_validation() {
+                    tracing::error!("PTO触发时地址验证未完成，主动断开连接");
+                    return;
+                }
                 1
             }
-            // Conventional loss probe
             _ => 2,
         };
         self.spaces[space].loss_probes = self.spaces[space].loss_probes.saturating_add(count);
@@ -1746,7 +1746,10 @@ impl Connection {
         let mut duration = self.path.rtt.pto_base() * backoff;
 
         if self.path.in_flight.ack_eliciting == 0 {
-            debug_assert!(!self.peer_completed_address_validation());
+            if !self.peer_completed_address_validation() {
+                tracing::error!("PTO计时器状态异常，地址验证未完成，主动断开连接");
+                return None;
+            }
             let space = match self.highest_space {
                 SpaceId::Handshake => SpaceId::Handshake,
                 _ => SpaceId::Initial,
