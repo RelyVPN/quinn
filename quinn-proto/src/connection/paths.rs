@@ -327,7 +327,7 @@ impl InFlight {
 
     /// Update counters to account for a packet becoming acknowledged, lost, or abandoned
     fn remove(&mut self, packet: &SentPacket) {
-        self.bytes -= u64::from(packet.size);
-        self.ack_eliciting -= u64::from(packet.ack_eliciting);
+        self.bytes = self.bytes.saturating_sub(u64::from(packet.size));
+        self.ack_eliciting = self.ack_eliciting.saturating_sub(u64::from(packet.ack_eliciting));
     }
 }
