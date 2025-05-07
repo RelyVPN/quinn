@@ -1747,7 +1747,6 @@ impl Connection {
 
         if self.path.in_flight.ack_eliciting == 0 {
             if !self.peer_completed_address_validation() {
-                tracing::error!("PTO计时器状态异常，地址验证未完成，主动断开连接");
                 return None;
             }
             let space = match self.highest_space {
