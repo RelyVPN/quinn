@@ -98,7 +98,6 @@ pub(crate) unsafe fn decode<T: Copy, C: CMsgHdr>(cmsg: &impl CMsgHdr) -> T {
 pub(crate) struct Iter<'a, M: MsgHdr> {
     hdr: &'a M,
     cmsg: Option<&'a M::ControlMessage>,
-    count: u64,
 }
 
 impl<'a, M: MsgHdr> Iter<'a, M> {
@@ -107,7 +106,6 @@ impl<'a, M: MsgHdr> Iter<'a, M> {
         Self {
             hdr,
             cmsg: hdr.cmsg_first_hdr().as_ref(),
-            count: 0,
         }
     }
 }
