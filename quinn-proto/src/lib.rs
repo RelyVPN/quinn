@@ -37,6 +37,11 @@ mod varint;
 
 pub use varint::{VarInt, VarIntBoundsExceeded};
 
+#[cfg(feature = "bloom")]
+mod bloom_token_log;
+#[cfg(feature = "bloom")]
+pub use bloom_token_log::BloomTokenLog;
+
 mod connection;
 pub use crate::connection::{
     BytesSource, Chunk, Chunks, ClosedStream, Connection, ConnectionError, ConnectionStats,
@@ -87,6 +92,9 @@ pub use crate::cid_generator::{
 mod token;
 use token::ResetToken;
 pub use token::{NoneTokenLog, NoneTokenStore, TokenLog, TokenReuseError, TokenStore};
+
+mod token_memory_cache;
+pub use token_memory_cache::TokenMemoryCache;
 
 #[cfg(feature = "arbitrary")]
 use arbitrary::Arbitrary;

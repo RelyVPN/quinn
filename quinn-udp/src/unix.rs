@@ -538,7 +538,13 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
 #[cfg(apple_fast)]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
-    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
+    // MacOS 10.15 `recvmsg_x` does not override the `msghdr_x`
+    // `msg_controllen`. Thus, after the call to `recvmsg_x`, one does not know
+    // which control messages have been written to. To prevent reading
+    // uninitialized memory, do not use `MaybeUninit` for `ctrls`, instead
+    // initialize `ctrls` with `0`s. A control message of all `0`s is
+    // automatically skipped by `libc::CMSG_NXTHDR`.
+    let mut ctrls = [cmsg::Aligned([0u8; CMSG_LEN]); BATCH_SIZE];
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
     let max_msg_count = bufs.len().min(BATCH_SIZE);
     
@@ -654,14 +660,16 @@ fn prepare_msg(
             encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
         }
 
-        // Only set the segment size if it is different from the size of the contents.
-        // Some network drivers don't like being told to do GSO even if there is effectively only a single segment.
-        if let Some(segment_size) = transmit
-            .segment_size
-            .filter(|segment_size| *segment_size != transmit.contents.len())
-        {
-            gso::set_segment_size(&mut encoder, segment_size as u16);
-        }
+    // Only set the segment size if it is less than the size of the contents.
+    // Some network drivers don't like being told to do GSO even if there is effectively only a single segment (i.e. `segment_size == transmit.contents.len()`)
+    // Additionally, a `segment_size` that is greater than the content also means there is effectively only a single segment.
+    // This case is actually quite common when splitting up a prepared GSO batch again after GSO has been disabled because the last datagram in a GSO batch is allowed to be smaller than the segment size.
+    if let Some(segment_size) = transmit
+        .segment_size
+        .filter(|segment_size| *segment_size < transmit.contents.len())
+    {
+        gso::set_segment_size(&mut encoder, segment_size as u16);
+    }
 
         if let Some(ip) = &transmit.src_ip {
             match ip {
@@ -723,7 +731,7 @@ fn prepare_recv(
 fn prepare_recv(
     buf: &mut IoSliceMut,
     name: &mut MaybeUninit<libc::sockaddr_storage>,
-    ctrl: &mut cmsg::Aligned<MaybeUninit<[u8; CMSG_LEN]>>,
+    ctrl: &mut cmsg::Aligned<[u8; CMSG_LEN]>,
     hdr: &mut msghdr_x,
 ) {
     hdr.msg_name = name.as_mut_ptr() as _;

@@ -122,10 +122,17 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
         
         let current = self.cmsg.take().unwrap();
         self.cmsg = unsafe { self.hdr.cmsg_nxt_hdr(current).as_ref() };
-        
-        // 增加计数
-        self.count += 1;
-        
+
+        #[cfg(apple_fast)]
+        {
+            // On MacOS < 14 CMSG_NXTHDR might continuously return a zeroed cmsg. In
+            // such case, return `None` instead, thus indicating the end of
+            // the cmsghdr chain.
+            if current.len() < mem::size_of::<M::ControlMessage>() {
+                return None;
+            }
+        }
+
         Some(current)
     }
 }
