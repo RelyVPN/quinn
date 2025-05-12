@@ -1,7 +1,7 @@
 use std::{
     io::{self, IoSliceMut},
     mem,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::windows::io::AsRawSocket,
     ptr,
     sync::Mutex,
@@ -175,8 +175,8 @@ impl UdpSocketState {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
-        let wsa_recvmsg_ptr = match WSARECVMSG_PTR {
-            Some(ptr) => ptr,
+        let wsa_recvmsg_ptr = match &*WSARECVMSG_PTR {
+            Some(ptr) => *ptr,
             None => {
                 tracing::error!("WSARecvMsg function pointer not available");
                 return Err(io::Error::new(
