@@ -87,6 +87,7 @@ impl Controller for NewReno {
         now: Instant,
         sent: Instant,
         is_persistent_congestion: bool,
+        _is_ecn: bool,
         _lost_bytes: u64,
     ) {
         if sent <= self.recovery_start_time {
@@ -110,6 +111,14 @@ impl Controller for NewReno {
 
     fn window(&self) -> u64 {
         self.window
+    }
+
+    fn metrics(&self) -> super::ControllerMetrics {
+        super::ControllerMetrics {
+            congestion_window: self.window(),
+            ssthresh: Some(self.ssthresh),
+            pacing_rate: None,
+        }
     }
 
     fn clone_box(&self) -> Box<dyn Controller> {

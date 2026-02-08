@@ -1,6 +1,16 @@
 use std::{fmt, sync::Arc};
+#[cfg(feature = "qlog")]
+use std::{io, sync::Mutex, time::Instant};
 
-use crate::{Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion};
+#[cfg(feature = "qlog")]
+use qlog::streamer::QlogStreamer;
+
+#[cfg(feature = "qlog")]
+use crate::QlogStream;
+use crate::{
+    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    connection::qlog::QlogSink,
+};
 
 /// Parameters governing the core QUIC state machine
 ///
@@ -29,6 +39,7 @@ pub struct TransportConfig {
     pub(crate) initial_mtu: u16,
     pub(crate) min_mtu: u16,
     pub(crate) mtu_discovery_config: Option<MtuDiscoveryConfig>,
+    pub(crate) pad_to_mtu: bool,
     pub(crate) ack_frequency_config: Option<AckFrequencyConfig>,
 
     pub(crate) persistent_congestion_threshold: u32,
@@ -43,6 +54,8 @@ pub struct TransportConfig {
     pub(crate) congestion_controller_factory: Arc<dyn congestion::ControllerFactory + Send + Sync>,
 
     pub(crate) enable_segmentation_offload: bool,
+
+    pub(crate) qlog_sink: QlogSink,
 }
 
 impl TransportConfig {
@@ -203,6 +216,20 @@ impl TransportConfig {
         self
     }
 
+    /// Pad UDP datagrams carrying application data to current maximum UDP payload size
+    ///
+    /// Disabled by default. UDP datagrams containing loss probes are exempt from padding.
+    ///
+    /// Enabling this helps mitigate traffic analysis by network observers, but it increases
+    /// bandwidth usage. Without this mitigation precise plain text size of application datagrams as
+    /// well as the total size of stream write bursts can be inferred by observers under certain
+    /// conditions. This analysis requires either an uncongested connection or application datagrams
+    /// too large to be coalesced.
+    pub fn pad_to_mtu(&mut self, value: bool) -> &mut Self {
+        self.pad_to_mtu = value;
+        self
+    }
+
     /// Specifies the ACK frequency config (see [`AckFrequencyConfig`] for details)
     ///
     /// The provided configuration will be ignored if the peer does not support the acknowledgement
@@ -314,6 +341,13 @@ impl TransportConfig {
         self.enable_segmentation_offload = enabled;
         self
     }
+
+    /// qlog capture configuration to use for a particular connection
+    #[cfg(feature = "qlog")]
+    pub fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
+        self.qlog_sink = stream.into();
+        self
+    }
 }
 
 impl Default for TransportConfig {
@@ -340,6 +374,7 @@ impl Default for TransportConfig {
             initial_mtu: INITIAL_MTU,
             min_mtu: INITIAL_MTU,
             mtu_discovery_config: Some(MtuDiscoveryConfig::default()),
+            pad_to_mtu: false,
             ack_frequency_config: None,
 
             persistent_congestion_threshold: 3,
@@ -354,6 +389,8 @@ impl Default for TransportConfig {
             congestion_controller_factory: Arc::new(congestion::CubicConfig::default()),
 
             enable_segmentation_offload: true,
+
+            qlog_sink: QlogSink::default(),
         }
     }
 }
@@ -374,6 +411,7 @@ impl fmt::Debug for TransportConfig {
             initial_mtu,
             min_mtu,
             mtu_discovery_config,
+            pad_to_mtu,
             ack_frequency_config,
             persistent_congestion_threshold,
             keep_alive_interval,
@@ -385,9 +423,11 @@ impl fmt::Debug for TransportConfig {
                 deterministic_packet_numbers: _,
             congestion_controller_factory: _,
             enable_segmentation_offload,
+            qlog_sink,
         } = self;
-        fmt.debug_struct("TransportConfig")
-            .field("max_concurrent_bidi_streams", max_concurrent_bidi_streams)
+        let mut s = fmt.debug_struct("TransportConfig");
+
+        s.field("max_concurrent_bidi_streams", max_concurrent_bidi_streams)
             .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
@@ -400,6 +440,7 @@ impl fmt::Debug for TransportConfig {
             .field("initial_mtu", initial_mtu)
             .field("min_mtu", min_mtu)
             .field("mtu_discovery_config", mtu_discovery_config)
+            .field("pad_to_mtu", pad_to_mtu)
             .field("ack_frequency_config", ack_frequency_config)
             .field(
                 "persistent_congestion_threshold",
@@ -411,8 +452,12 @@ impl fmt::Debug for TransportConfig {
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             // congestion_controller_factory not debug
-            .field("enable_segmentation_offload", enable_segmentation_offload)
-            .finish_non_exhaustive()
+            .field("enable_segmentation_offload", enable_segmentation_offload);
+        if cfg!(feature = "qlog") {
+            s.field("qlog_stream", &qlog_sink.is_enabled());
+        }
+
+        s.finish_non_exhaustive()
     }
 }
 
@@ -490,6 +535,94 @@ impl Default for AckFrequencyConfig {
             ack_eliciting_threshold: VarInt(1),
             max_ack_delay: None,
             reordering_threshold: VarInt(2),
+        }
+    }
+}
+
+/// Configuration for qlog trace logging
+#[cfg(feature = "qlog")]
+pub struct QlogConfig {
+    writer: Option<Box<dyn io::Write + Send + Sync>>,
+    title: Option<String>,
+    description: Option<String>,
+    start_time: Instant,
+}
+
+#[cfg(feature = "qlog")]
+impl QlogConfig {
+    /// Where to write a qlog `TraceSeq`
+    pub fn writer(&mut self, writer: Box<dyn io::Write + Send + Sync>) -> &mut Self {
+        self.writer = Some(writer);
+        self
+    }
+
+    /// Title to record in the qlog capture
+    pub fn title(&mut self, title: Option<String>) -> &mut Self {
+        self.title = title;
+        self
+    }
+
+    /// Description to record in the qlog capture
+    pub fn description(&mut self, description: Option<String>) -> &mut Self {
+        self.description = description;
+        self
+    }
+
+    /// Epoch qlog event times are recorded relative to
+    pub fn start_time(&mut self, start_time: Instant) -> &mut Self {
+        self.start_time = start_time;
+        self
+    }
+
+    /// Construct the [`QlogStream`] described by this configuration
+    pub fn into_stream(self) -> Option<QlogStream> {
+        use tracing::warn;
+
+        let writer = self.writer?;
+        let trace = qlog::TraceSeq::new(
+            qlog::VantagePoint {
+                name: None,
+                ty: qlog::VantagePointType::Unknown,
+                flow: None,
+            },
+            self.title.clone(),
+            self.description.clone(),
+            Some(qlog::Configuration {
+                time_offset: Some(0.0),
+                original_uris: None,
+            }),
+            None,
+        );
+
+        let mut streamer = QlogStreamer::new(
+            qlog::QLOG_VERSION.into(),
+            self.title,
+            self.description,
+            None,
+            self.start_time,
+            trace,
+            qlog::events::EventImportance::Core,
+            writer,
+        );
+
+        match streamer.start_log() {
+            Ok(()) => Some(QlogStream(Arc::new(Mutex::new(streamer)))),
+            Err(e) => {
+                warn!("could not initialize endpoint qlog streamer: {e}");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "qlog")]
+impl Default for QlogConfig {
+    fn default() -> Self {
+        Self {
+            writer: None,
+            title: None,
+            description: None,
+            start_time: Instant::now(),
         }
     }
 }

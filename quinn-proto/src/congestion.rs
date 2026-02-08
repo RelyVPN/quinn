@@ -56,14 +56,30 @@ pub trait Controller: Send + Sync {
         now: Instant,
         sent: Instant,
         is_persistent_congestion: bool,
+        is_ecn: bool,
         lost_bytes: u64,
     );
+
+    /// Packets were incorrectly deemed lost
+    ///
+    /// This function is called when all packets that were deemed lost (for instance because
+    /// of packet reordering) are acknowledged after the congestion event was raised.
+    fn on_spurious_congestion_event(&mut self) {}
 
     /// The known MTU for the current network path has been updated
     fn on_mtu_update(&mut self, new_mtu: u16);
 
     /// Number of ack-eliciting bytes that may be in flight
     fn window(&self) -> u64;
+
+    /// Retrieve implementation-specific metrics used to populate `qlog` traces when they are enabled
+    fn metrics(&self) -> ControllerMetrics {
+        ControllerMetrics {
+            congestion_window: self.window(),
+            ssthresh: None,
+            pacing_rate: None,
+        }
+    }
 
     /// Duplicate the controller's state
     fn clone_box(&self) -> Box<dyn Controller>;
@@ -73,6 +89,18 @@ pub trait Controller: Send + Sync {
 
     /// Returns Self for use in down-casting to extract implementation details
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+/// Common congestion controller metrics
+#[derive(Default)]
+#[non_exhaustive]
+pub struct ControllerMetrics {
+    /// Congestion window (bytes)
+    pub congestion_window: u64,
+    /// Slow start threshold (bytes)
+    pub ssthresh: Option<u64>,
+    /// Pacing rate (bits/s)
+    pub pacing_rate: Option<u64>,
 }
 
 /// Constructs controllers on demand

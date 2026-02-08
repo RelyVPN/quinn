@@ -214,7 +214,7 @@ impl Frame {
 }
 
 #[derive(Clone, Debug)]
-pub enum Close {
+pub(crate) enum Close {
     Connection(ConnectionClose),
     Application(ApplicationClose),
 }
@@ -339,7 +339,7 @@ impl ApplicationClose {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct Ack {
+pub(crate) struct Ack {
     pub largest: u64,
     pub delay: u64,
     pub additional: Bytes,
@@ -378,7 +378,7 @@ impl<'a> IntoIterator for &'a Ack {
 }
 
 impl Ack {
-    pub fn encode<W: BufMut>(
+    pub(crate) fn encode<W: BufMut>(
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
@@ -416,13 +416,13 @@ impl Ack {
         }
     }
 
-    pub fn iter(&self) -> AckIter<'_> {
+    pub(crate) fn iter(&self) -> AckIter<'_> {
         self.into_iter()
     }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct EcnCounts {
+pub(crate) struct EcnCounts {
     pub ect0: u64,
     pub ect1: u64,
     pub ce: u64,
@@ -445,13 +445,13 @@ impl std::ops::AddAssign<EcnCodepoint> for EcnCounts {
 }
 
 impl EcnCounts {
-    pub const ZERO: Self = Self {
+    pub(crate) const ZERO: Self = Self {
         ect0: 0,
         ect1: 0,
         ce: 0,
     };
 
-    pub fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
         out.write_var(self.ect0);
         out.write_var(self.ect1);
         out.write_var(self.ce);
@@ -806,7 +806,7 @@ impl From<UnexpectedEnd> for IterErr {
 }
 
 #[derive(Debug, Clone)]
-pub struct AckIter<'a> {
+pub(crate) struct AckIter<'a> {
     largest: u64,
     data: &'a [u8],
 }
@@ -889,6 +889,10 @@ impl NewConnectionId {
         out.put_slice(&self.id);
         out.put_slice(&self.reset_token);
     }
+}
+
+impl FrameStruct for NewConnectionId {
+    const SIZE_BOUND: usize = 1 + 8 + 8 + 1 + MAX_CID_SIZE + RESET_TOKEN_SIZE;
 }
 
 /// Smallest number of bytes this type of frame is guaranteed to fit within.

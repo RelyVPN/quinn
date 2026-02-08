@@ -61,20 +61,15 @@ impl Endpoint {
     /// `allow_mtud` enables path MTU detection when requested by `Connection` configuration for
     /// better performance. This requires that outgoing packets are never fragmented, which can be
     /// achieved via e.g. the `IPV6_DONTFRAG` socket option.
-    ///
-    /// If `rng_seed` is provided, it will be used to initialize the endpoint's rng (having priority
-    /// over the rng seed configured in [`EndpointConfig`]). Note that the `rng_seed` parameter will
-    /// be removed in a future release, so prefer setting it to `None` and configuring rng seeds
-    /// using [`EndpointConfig::rng_seed`].
     pub fn new(
         config: Arc<EndpointConfig>,
         server_config: Option<Arc<ServerConfig>>,
         allow_mtud: bool,
-        rng_seed: Option<[u8; 32]>,
     ) -> Self {
-        let rng_seed = rng_seed.or(config.rng_seed);
         Self {
-            rng: rng_seed.map_or(StdRng::from_os_rng(), StdRng::from_seed),
+            rng: config
+                .rng_seed
+                .map_or_else(StdRng::from_os_rng, StdRng::from_seed),
             index: ConnectionIndex::default(),
             connections: Slab::new(),
             local_cid_generator: (config.connection_id_generator_factory.as_ref())(),
@@ -250,16 +245,15 @@ impl Endpoint {
         } else if !event.first_decode.is_initial()
             && self.local_cid_generator.validate(dst_cid).is_err()
         {
-            // If we got this far, we're receiving a seemingly valid packet for an unknown
-            // connection. Send a stateless reset if possible.
-
             debug!("dropping packet with invalid CID");
             None
         } else if dst_cid.is_empty() {
             trace!("dropping unrecognized short packet without ID");
             None
         } else {
-            self.stateless_reset(now, datagram_len, addresses, *dst_cid, buf)
+            // If we got this far, we're receiving a seemingly valid packet for an unknown
+            // connection. Send a stateless reset if possible.
+            self.stateless_reset(now, datagram_len, addresses, dst_cid, buf)
                 .map(DatagramEvent::Response)
         }
     }
@@ -436,12 +430,11 @@ impl Endpoint {
             }
         };
 
-        let server_config = match self.server_config.as_ref() {
-            Some(config) => config.clone(),
-            None => {
-                tracing::error!("Server config missing when handling first packet");
-                return None;
-            }
+        let Some(server_config) = &self.server_config else {
+            debug!("packet for unrecognized connection {}", dst_cid);
+            return self
+                .stateless_reset(event.now, datagram_len, addresses, dst_cid, buf)
+                .map(DatagramEvent::Response);
         };
 
         if datagram_len < MIN_INITIAL_SIZE as usize {
@@ -467,7 +460,7 @@ impl Endpoint {
                 header.version,
                 addresses,
                 &crypto,
-                &header.src_cid,
+                header.src_cid,
                 reason,
                 buf,
             )));
@@ -500,7 +493,7 @@ impl Endpoint {
                     header.version,
                     addresses,
                     &crypto,
-                    &header.src_cid,
+                    header.src_cid,
                     TransportError::INVALID_TOKEN(""),
                     buf,
                 )));
@@ -529,13 +522,14 @@ impl Endpoint {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
+    // box err to avoid clippy::result_large_err
     pub fn accept(
         &mut self,
         mut incoming: Incoming,
         now: Instant,
         buf: &mut Vec<u8>,
         server_config: Option<Arc<ServerConfig>>,
-    ) -> Result<(ConnectionHandle, Connection), AcceptError> {
+    ) -> Result<(ConnectionHandle, Connection), Box<AcceptError>> {
         let remote_address_validated = incoming.remote_address_validated();
         incoming.improper_drop_warner.dismiss();
         let incoming_buffer = self.incoming_buffers.remove(incoming.incoming_idx);
@@ -554,12 +548,12 @@ impl Endpoint {
                 Some(config) => config.clone(),
                 None => {
                     tracing::error!("No server config available for incoming connection");
-                    return Err(AcceptError {
+                    return Err(Box::new(AcceptError {
                         cause: ConnectionError::TransportError(
                             TransportError::INTERNAL_ERROR("missing server configuration")
                         ),
                         response: None,
-                    });
+                    }));
                 }
             },
         };
@@ -573,26 +567,26 @@ impl Endpoint {
         {
             debug!("abandoning accept of stale initial");
             self.index.remove_initial(dst_cid);
-            return Err(AcceptError {
+            return Err(Box::new(AcceptError {
                 cause: ConnectionError::TimedOut,
                 response: None,
-            });
+            }));
         }
 
         if self.cids_exhausted() {
             debug!("refusing connection");
             self.index.remove_initial(dst_cid);
-            return Err(AcceptError {
+            return Err(Box::new(AcceptError {
                 cause: ConnectionError::CidsExhausted,
                 response: Some(self.initial_close(
                     version,
                     incoming.addresses,
                     &incoming.crypto,
-                    &src_cid,
+                    src_cid,
                     TransportError::CONNECTION_REFUSED(""),
                     buf,
                 )),
-            });
+            }));
         }
 
         if incoming
@@ -608,10 +602,10 @@ impl Endpoint {
         {
             debug!(packet_number, "failed to authenticate initial packet");
             self.index.remove_initial(dst_cid);
-            return Err(AcceptError {
+            return Err(Box::new(AcceptError {
                 cause: TransportError::PROTOCOL_VIOLATION("authentication failed").into(),
                 response: None,
-            });
+            }));
         };
 
         let ch = ConnectionHandle(self.connections.vacant_key());
@@ -628,9 +622,7 @@ impl Endpoint {
         params.original_dst_cid = Some(incoming.token.orig_dst_cid);
         params.retry_src_cid = incoming.token.retry_src_cid;
         let mut pref_addr_cid = None;
-        if server_config.preferred_address_v4.is_some()
-            || server_config.preferred_address_v6.is_some()
-        {
+        if server_config.has_preferred_address() {
             let cid = self.new_cid(ch);
             pref_addr_cid = Some(cid);
             params.preferred_address = Some(PreferredAddress {
@@ -686,13 +678,13 @@ impl Endpoint {
                         version,
                         incoming.addresses,
                         &incoming.crypto,
-                        &src_cid,
+                        src_cid,
                         e.clone(),
                         buf,
                     )),
                     _ => None,
                 };
-                Err(AcceptError { cause: e, response })
+                Err(Box::new(AcceptError { cause: e, response }))
             }
         }
     }
@@ -742,7 +734,7 @@ impl Endpoint {
             incoming.packet.header.version,
             incoming.addresses,
             &incoming.crypto,
-            &incoming.packet.header.src_cid,
+            incoming.packet.header.src_cid,
             TransportError::CONNECTION_REFUSED(""),
             buf,
         )
@@ -753,7 +745,7 @@ impl Endpoint {
     /// Errors if `incoming.may_retry()` is false.
     pub fn retry(&mut self, incoming: Incoming, buf: &mut Vec<u8>) -> Result<Transmit, RetryError> {
         if !incoming.may_retry() {
-            return Err(RetryError(incoming));
+            return Err(RetryError(Box::new(incoming)));
         }
 
         self.clean_up_incoming(&incoming);
@@ -762,7 +754,7 @@ impl Endpoint {
             Some(config) => config,
             None => {
                 tracing::error!("No server config available during retry");
-                return Err(RetryError(incoming));
+                return Err(RetryError(Box::new(incoming)));
             }
         };
 
@@ -793,7 +785,7 @@ impl Endpoint {
         buf.put_slice(&token);
         buf.extend_from_slice(&server_config.crypto.retry_tag(
             incoming.packet.header.version,
-            &incoming.packet.header.dst_cid,
+            incoming.packet.header.dst_cid,
             buf,
         ));
         encode.finish(buf, &*incoming.crypto.header.local, None);
@@ -889,7 +881,7 @@ impl Endpoint {
         version: u32,
         addresses: FourTuple,
         crypto: &Keys,
-        remote_id: &ConnectionId,
+        remote_id: ConnectionId,
         reason: TransportError,
         buf: &mut Vec<u8>,
     ) -> Transmit {
@@ -899,7 +891,7 @@ impl Endpoint {
         let local_id = self.local_cid_generator.generate_cid();
         let number = PacketNumber::U8(0);
         let header = Header::Initial(InitialHeader {
-            dst_cid: *remote_id,
+            dst_cid: remote_id,
             src_cid: local_id,
             number,
             token: Bytes::new(),
@@ -1110,12 +1102,12 @@ impl ConnectionIndex {
     /// Find the existing connection that `datagram` should be routed to, if any
     fn get(&self, addresses: &FourTuple, datagram: &PartialDecode) -> Option<RouteDatagramTo> {
         if !datagram.dst_cid().is_empty() {
-            if let Some(&ch) = self.connection_ids.get(datagram.dst_cid()) {
+            if let Some(&ch) = self.connection_ids.get(&datagram.dst_cid()) {
                 return Some(RouteDatagramTo::Connection(ch));
             }
         }
         if datagram.is_initial() || datagram.is_0rtt() {
-            if let Some(&ch) = self.connection_ids_initial.get(datagram.dst_cid()) {
+            if let Some(&ch) = self.connection_ids_initial.get(&datagram.dst_cid()) {
                 return Some(ch);
             }
         }
@@ -1234,13 +1226,13 @@ impl Incoming {
     }
 
     /// The original destination connection ID sent by the client
-    pub fn orig_dst_cid(&self) -> &ConnectionId {
-        &self.token.orig_dst_cid
+    pub fn orig_dst_cid(&self) -> ConnectionId {
+        self.token.orig_dst_cid
     }
 }
 
 impl fmt::Debug for Incoming {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Incoming")
             .field("addresses", &self.addresses)
             .field("ecn", &self.ecn)
@@ -1315,12 +1307,12 @@ pub struct AcceptError {
 /// Error for attempting to retry an [`Incoming`] which already bears a token from a previous retry
 #[derive(Debug, Error)]
 #[error("retry() with validated Incoming")]
-pub struct RetryError(Incoming);
+pub struct RetryError(Box<Incoming>);
 
 impl RetryError {
     /// Get the [`Incoming`]
     pub fn into_incoming(self) -> Incoming {
-        self.0
+        *self.0
     }
 }
 

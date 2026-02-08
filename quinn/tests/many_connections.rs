@@ -19,12 +19,10 @@ struct Shared {
 #[test]
 #[ignore]
 fn connect_n_nodes_to_1_and_send_1mb_data() {
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .finish(),
-    )
-    .unwrap();
+    let _ = tracing_subscriber::FmtSubscriber::builder()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
 
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     let _guard = runtime.enter();
@@ -156,7 +154,7 @@ fn gen_cert() -> (CertificateDer<'static>, PrivatePkcs8KeyDer<'static>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     (
         cert.cert.into(),
-        PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()),
+        PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
     )
 }
 

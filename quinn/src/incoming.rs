@@ -52,10 +52,10 @@ impl Incoming {
     pub fn retry(mut self) -> Result<(), RetryError> {
         let state = self.0.take().unwrap();
         state.endpoint.retry(state.inner).map_err(|e| {
-            RetryError(Self(Some(State {
+            RetryError(Box::new(Self(Some(State {
                 inner: e.into_incoming(),
                 endpoint: state.endpoint,
-            })))
+            }))))
         })
     }
 
@@ -96,7 +96,7 @@ impl Incoming {
 
     /// The original destination CID when initiating the connection
     pub fn orig_dst_cid(&self) -> ConnectionId {
-        *self.0.as_ref().unwrap().inner.orig_dst_cid()
+        self.0.as_ref().unwrap().inner.orig_dst_cid()
     }
 }
 
@@ -118,12 +118,12 @@ struct State {
 /// Error for attempting to retry an [`Incoming`] which already bears a token from a previous retry
 #[derive(Debug, Error)]
 #[error("retry() with validated Incoming")]
-pub struct RetryError(Incoming);
+pub struct RetryError(Box<Incoming>);
 
 impl RetryError {
     /// Get the [`Incoming`]
     pub fn into_incoming(self) -> Incoming {
-        self.0
+        *self.0
     }
 }
 
@@ -134,7 +134,7 @@ pub struct IncomingFuture(Result<Connecting, ConnectionError>);
 impl Future for IncomingFuture {
     type Output = Result<Connection, ConnectionError>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match &mut self.0 {
             Ok(ref mut connecting) => Pin::new(connecting).poll(cx),
             Err(e) => Poll::Ready(Err(e.clone())),

@@ -6,12 +6,16 @@ use bytes::BytesMut;
 #[cfg(feature = "ring")]
 use ring::aead;
 pub use rustls::Error;
+#[cfg(feature = "__rustls-post-quantum-test")]
+use rustls::NamedGroup;
 use rustls::{
     self, CipherSuite,
     client::danger::ServerCertVerifier,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
     quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
 };
+#[cfg(feature = "platform-verifier")]
+use rustls_platform_verifier::BuilderVerifierExt;
 
 use crate::{
     ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
@@ -49,8 +53,8 @@ impl TlsSession {
 }
 
 impl crypto::Session for TlsSession {
-    fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys {
-        initial_keys(self.version, *dst_cid, side, &self.suite)
+    fn initial_keys(&self, dst_cid: ConnectionId, side: Side) -> Keys {
+        initial_keys(self.version, dst_cid, side, &self.suite)
     }
 
     fn handshake_data(&self) -> Option<Box<dyn Any>> {
@@ -63,6 +67,12 @@ impl crypto::Session for TlsSession {
                 Connection::Client(_) => None,
                 Connection::Server(ref session) => session.server_name().map(|x| x.into()),
             },
+            #[cfg(feature = "__rustls-post-quantum-test")]
+            negotiated_key_exchange_group: self
+                .inner
+                .negotiated_key_exchange_group()
+                .expect("key exchange group is negotiated")
+                .name(),
         }))
     }
 
@@ -100,6 +110,7 @@ impl crypto::Session for TlsSession {
                     code: TransportErrorCode::crypto(alert.into()),
                     frame: None,
                     reason: e.to_string(),
+                    crypto: Some(Arc::new(e)),
                 }
             } else {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}"))
@@ -161,16 +172,15 @@ impl crypto::Session for TlsSession {
         })
     }
 
-    fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
-        let tag_start = match payload.len().checked_sub(16) {
-            Some(x) => x,
-            None => return false,
+    fn is_valid_retry(&self, orig_dst_cid: ConnectionId, header: &[u8], payload: &[u8]) -> bool {
+        let Some(tag_start) = payload.len().checked_sub(16) else {
+            return false;
         };
 
         let mut pseudo_packet =
             Vec::with_capacity(header.len() + payload.len() + orig_dst_cid.len() + 1);
         pseudo_packet.push(orig_dst_cid.len() as u8);
-        pseudo_packet.extend_from_slice(orig_dst_cid);
+        pseudo_packet.extend_from_slice(&orig_dst_cid);
         pseudo_packet.extend_from_slice(header);
         let tag_start = tag_start + pseudo_packet.len();
         pseudo_packet.extend_from_slice(payload);
@@ -255,12 +265,15 @@ pub struct HandshakeData {
     ///
     /// Always `None` for outgoing connections
     pub server_name: Option<String>,
+    /// The key exchange group negotiated with the peer
+    #[cfg(feature = "__rustls-post-quantum-test")]
+    pub negotiated_key_exchange_group: NamedGroup,
 }
 
 /// A QUIC-compatible TLS client configuration
 ///
 /// Quinn implicitly constructs a `QuicClientConfig` with reasonable defaults within
-/// [`ClientConfig::with_root_certificates()`][root_certs] and [`ClientConfig::with_platform_verifier()`][platform].
+/// [`ClientConfig::with_root_certificates()`][root_certs] and [`ClientConfig::try_with_platform_verifier()`][platform].
 /// Alternatively, `QuicClientConfig`'s [`TryFrom`] implementation can be used to wrap around a
 /// custom [`rustls::ClientConfig`], in which case care should be taken around certain points:
 ///
@@ -274,13 +287,31 @@ pub struct HandshakeData {
 /// 256 server names.
 ///
 /// [root_certs]: crate::config::ClientConfig::with_root_certificates()
-/// [platform]: crate::config::ClientConfig::with_platform_verifier()
+/// [platform]: crate::config::ClientConfig::try_with_platform_verifier()
 pub struct QuicClientConfig {
     pub(crate) inner: Arc<rustls::ClientConfig>,
     initial: Suite,
 }
 
 impl QuicClientConfig {
+    #[cfg(feature = "platform-verifier")]
+    pub(crate) fn with_platform_verifier() -> Result<Self, Error> {
+        // Keep in sync with `inner()` below
+        let mut inner = rustls::ClientConfig::builder_with_provider(configured_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap() // The default providers support TLS 1.3
+            .with_platform_verifier()?
+            .with_no_client_auth();
+
+        inner.enable_early_data = true;
+        Ok(Self {
+            // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
+            initial: initial_suite_from_provider(inner.crypto_provider())
+                .expect("no initial cipher suite found"),
+            inner: Arc::new(inner),
+        })
+    }
+
     /// Initialize a sane QUIC-compatible TLS client configuration
     ///
     /// QUIC requires that TLS 1.3 be enabled. Advanced users can use any [`rustls::ClientConfig`] that
@@ -309,6 +340,7 @@ impl QuicClientConfig {
     }
 
     pub(crate) fn inner(verifier: Arc<dyn ServerCertVerifier>) -> rustls::ClientConfig {
+        // Keep in sync with `with_platform_verifier()` above
         let mut config = rustls::ClientConfig::builder_with_provider(configured_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .unwrap() // The default providers support TLS 1.3
@@ -383,7 +415,7 @@ pub struct NoInitialCipherSuite {
 }
 
 impl std::fmt::Display for NoInitialCipherSuite {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self.specific {
             true => "invalid cipher suite specified",
             false => "no initial cipher suite found",
@@ -500,13 +532,13 @@ impl crypto::ServerConfig for QuicServerConfig {
     fn initial_keys(
         &self,
         version: u32,
-        dst_cid: &ConnectionId,
+        dst_cid: ConnectionId,
     ) -> Result<Keys, UnsupportedVersion> {
         let version = interpret_version(version)?;
-        Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
+        Ok(initial_keys(version, dst_cid, Side::Server, &self.initial))
     }
 
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+    fn retry_tag(&self, version: u32, orig_dst_cid: ConnectionId, packet: &[u8]) -> [u8; 16] {
         // Safe: `start_session()` is never called if `initial_keys()` rejected `version`
         let version = interpret_version(version).unwrap();
         let (nonce, key) = match version {
@@ -517,7 +549,7 @@ impl crypto::ServerConfig for QuicServerConfig {
 
         let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
         pseudo_packet.push(orig_dst_cid.len() as u8);
-        pseudo_packet.extend_from_slice(orig_dst_cid);
+        pseudo_packet.extend_from_slice(&orig_dst_cid);
         pseudo_packet.extend_from_slice(packet);
 
         let nonce = aead::Nonce::assume_unique_for_key(nonce);

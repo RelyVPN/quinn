@@ -39,6 +39,9 @@ pub(super) struct PacketSpace {
     /// Transmitted but not acked
     // We use a BTreeMap here so we can efficiently query by range on ACK and for loss detection
     pub(super) sent_packets: BTreeMap<u64, SentPacket>,
+    /// Packets that were deemed lost
+    // Older packets are regularly removed in `Connection::drain_lost_packets`.
+    pub(super) lost_packets: BTreeMap<u64, LostPacket>,
     /// Number of explicit congestion notification codepoints seen on incoming packets
     pub(super) ecn_counters: frame::EcnCounts,
     /// Recent ECN counters sent by the peer in ACK frames
@@ -64,8 +67,6 @@ pub(super) struct PacketSpace {
     pub(super) loss_probes: u32,
     pub(super) ping_pending: bool,
     pub(super) immediate_ack_pending: bool,
-    /// Number of congestion control "in flight" bytes
-    pub(super) in_flight: u64,
     /// Number of packets sent in the current key phase
     pub(super) sent_with_keys: u64,
 }
@@ -86,6 +87,7 @@ impl PacketSpace {
             largest_ack_eliciting_sent: 0,
             unacked_non_ack_eliciting_tail: 0,
             sent_packets: BTreeMap::new(),
+            lost_packets: BTreeMap::new(),
             ecn_counters: frame::EcnCounts::ZERO,
             ecn_feedback: frame::EcnCounts::ZERO,
 
@@ -97,7 +99,6 @@ impl PacketSpace {
             loss_probes: 0,
             ping_pending: false,
             immediate_ack_pending: false,
-            in_flight: 0,
             sent_with_keys: 0,
         }
     }
@@ -209,7 +210,6 @@ impl PacketSpace {
     /// Stop tracking sent packet `number`, and return what we knew about it
     pub(super) fn take(&mut self, number: u64) -> Option<SentPacket> {
         let packet = self.sent_packets.remove(&number)?;
-        self.in_flight -= u64::from(packet.size);
         if !packet.ack_eliciting && number > self.largest_ack_eliciting_sent {
             self.unacked_non_ack_eliciting_tail =
                 self.unacked_non_ack_eliciting_tail.checked_sub(1).unwrap();
@@ -217,8 +217,8 @@ impl PacketSpace {
         Some(packet)
     }
 
-    /// Returns the number of bytes to *remove* from the connection's in-flight count
-    pub(super) fn sent(&mut self, number: u64, packet: SentPacket) -> u64 {
+    /// May return a packet that should be forgotten
+    pub(super) fn sent(&mut self, number: u64, packet: SentPacket) -> Option<SentPacket> {
         // Retain state for at most this many non-ACK-eliciting packets sent after the most recently
         // sent ACK-eliciting packet. We're never guaranteed to receive an ACK for those, and we
         // can't judge them as lost without an ACK, so to limit memory in applications which receive
@@ -227,7 +227,7 @@ impl PacketSpace {
         // due to weird peer behavior.
         const MAX_UNACKED_NON_ACK_ELICTING_TAIL: u64 = 1_000;
 
-        let mut forgotten_bytes = 0;
+        let mut forgotten = None;
         if packet.ack_eliciting {
             self.unacked_non_ack_eliciting_tail = 0;
             self.largest_ack_eliciting_sent = number;
@@ -249,15 +249,22 @@ impl PacketSpace {
                 .sent_packets
                 .remove(&oldest_after_ack_eliciting)
                 .unwrap();
-            forgotten_bytes = u64::from(packet.size);
-            self.in_flight -= forgotten_bytes;
+            debug_assert!(!packet.ack_eliciting);
+            forgotten = Some(packet);
         } else {
             self.unacked_non_ack_eliciting_tail += 1;
         }
 
-        self.in_flight += u64::from(packet.size);
         self.sent_packets.insert(number, packet);
-        forgotten_bytes
+        forgotten
+    }
+
+    /// Whether any congestion-controlled packets in this space are not yet acknowledged or lost
+    pub(super) fn has_in_flight(&self) -> bool {
+        // The number of non-congestion-controlled (i.e. size == 0) packets in flight at a time
+        // should be small, since otherwise congestion control wouldn't be effective. Therefore,
+        // this shouldn't need to visit many packets before finishing one way or another.
+        self.sent_packets.values().any(|x| x.size != 0)
     }
 }
 
@@ -277,6 +284,8 @@ impl IndexMut<SpaceId> for [PacketSpace; 3] {
 /// Represents one or more packets subject to retransmission
 #[derive(Debug, Clone)]
 pub(super) struct SentPacket {
+    /// [`PathData::generation`](super::PathData::generation) of the path on which this packet was sent
+    pub(super) path_generation: u64,
     /// The time the packet was sent.
     pub(super) time_sent: Instant,
     /// The number of bytes sent in the packet, not including UDP or IP overhead, but including QUIC
@@ -295,6 +304,13 @@ pub(super) struct SentPacket {
     ///
     /// The actual application data is stored with the stream state.
     pub(super) stream_frames: frame::StreamMetaVec,
+}
+
+/// Represents one or more packets that are deemed lost.
+#[derive(Debug)]
+pub(super) struct LostPacket {
+    /// The time the packet was sent.
+    pub(super) time_sent: Instant,
 }
 
 /// Retransmittable data queue
@@ -651,7 +667,7 @@ impl PendingAcks {
     /// Returns the delay since the packet with the largest packet number was received
     pub(super) fn ack_delay(&self, now: Instant) -> Duration {
         self.largest_packet
-            .map_or(Duration::default(), |(_, received)| now - received)
+            .map_or_else(Duration::default, |(_, received)| now - received)
     }
 
     /// Handle receipt of a new packet

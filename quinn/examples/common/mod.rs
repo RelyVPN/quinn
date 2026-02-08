@@ -12,7 +12,7 @@ use std::{error::Error, net::SocketAddr, sync::Arc};
 ///
 /// - server_certs: list of trusted certificates.
 #[allow(unused)]
-pub fn make_client_endpoint(
+pub(crate) fn make_client_endpoint(
     bind_addr: SocketAddr,
     server_certs: &[&[u8]],
 ) -> Result<Endpoint, Box<dyn Error + Send + Sync + 'static>> {
@@ -30,7 +30,7 @@ pub fn make_client_endpoint(
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
 #[allow(unused)]
-pub fn make_server_endpoint(
+pub(crate) fn make_server_endpoint(
     bind_addr: SocketAddr,
 ) -> Result<(Endpoint, CertificateDer<'static>), Box<dyn Error + Send + Sync + 'static>> {
     let (server_config, server_cert) = configure_server()?;
@@ -59,7 +59,7 @@ fn configure_server()
 -> Result<(ServerConfig, CertificateDer<'static>), Box<dyn Error + Send + Sync + 'static>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = CertificateDer::from(cert.cert);
-    let priv_key = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+    let priv_key = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
 
     let mut server_config =
         ServerConfig::with_single_cert(vec![cert_der.clone()], priv_key.into())?;
@@ -70,4 +70,4 @@ fn configure_server()
 }
 
 #[allow(unused)]
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+pub(crate) const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];

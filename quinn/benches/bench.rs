@@ -79,7 +79,7 @@ struct Context {
 impl Context {
     fn new() -> Self {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let key = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+        let key = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
         let cert = CertificateDer::from(cert.cert);
 
         let mut server_config =
@@ -96,7 +96,7 @@ impl Context {
         }
     }
 
-    pub fn spawn_server(&self) -> (SocketAddr, thread::JoinHandle<()>) {
+    pub(crate) fn spawn_server(&self) -> (SocketAddr, thread::JoinHandle<()>) {
         let sock = UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0)).unwrap();
         let addr = sock.local_addr().unwrap();
         let config = self.server_config.clone();
@@ -139,7 +139,7 @@ impl Context {
         (addr, handle)
     }
 
-    pub fn make_client(
+    pub(crate) fn make_client(
         &self,
         server_addr: SocketAddr,
     ) -> (quinn::Endpoint, quinn::Connection, Runtime) {
