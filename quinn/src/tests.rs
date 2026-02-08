@@ -1044,17 +1044,23 @@ unsafe fn clone_waker(data: *const ()) -> RawWaker {
 }
 
 unsafe fn wake_waker(data: *const ()) {
-    let arc = Arc::<WakeCounter>::from_raw(data as *const WakeCounter);
-    arc.wakes.fetch_add(1, Ordering::SeqCst);
-    // arc drops here
+    unsafe {
+        let arc = Arc::<WakeCounter>::from_raw(data as *const WakeCounter);
+        arc.wakes.fetch_add(1, Ordering::SeqCst);
+        // arc drops here
+    }
 }
 
 unsafe fn wake_by_ref_waker(data: *const ()) {
-    let arc = Arc::<WakeCounter>::from_raw(data as *const WakeCounter);
-    arc.wakes.fetch_add(1, Ordering::SeqCst);
-    std::mem::forget(arc);
+    unsafe {
+        let arc = Arc::<WakeCounter>::from_raw(data as *const WakeCounter);
+        arc.wakes.fetch_add(1, Ordering::SeqCst);
+        std::mem::forget(arc);
+    }
 }
 
 unsafe fn drop_waker(data: *const ()) {
-    drop(Arc::<WakeCounter>::from_raw(data as *const WakeCounter));
+    unsafe {
+        drop(Arc::<WakeCounter>::from_raw(data as *const WakeCounter));
+    }
 }

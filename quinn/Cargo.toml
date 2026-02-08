@@ -15,7 +15,7 @@ rust-version.workspace = true
 [features]
 # NOTE: Please keep this in sync with the feature list in `.github/workflows/codecov.yml`, see
 # comment in that file for more information.
-default = ["tracing-log", "platform-verifier", "runtime-tokio", "rustls-ring", "bloom"]
+default = ["tracing-log", "platform-verifier", "runtime-tokio", "rustls-ring", "fast-apple-datapath", "bloom"]
 # Enables `Endpoint::client` and `Endpoint::server` conveniences
 aws-lc-rs = ["proto/aws-lc-rs"]
 aws-lc-rs-fips = ["proto/aws-lc-rs-fips"]
@@ -42,6 +42,8 @@ runtime-smol = ["dep:async-io", "dep:smol"]
 tracing-log = ["tracing/log", "proto/tracing-log", "udp/tracing-log"]
 # Enable rustls logging
 rustls-log = ["rustls?/logging"]
+# Enable fast-apple-datapath feature for quinn-udp on macOS
+fast-apple-datapath = ["udp/fast-apple-datapath"]
 # Enable qlog support
 qlog = ["proto/qlog"]
 
