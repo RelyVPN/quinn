@@ -198,15 +198,15 @@ impl UdpSocketState {
 
     /// Sends a [`Transmit`] on the given socket.
     ///
-    /// This function will return errors of kind [`io::ErrorKind::WouldBlock`] and certain
-    /// fatal errors that indicate the socket is no longer usable. Other non-fatal errors 
-    /// will be logged and converted to `Ok`.
+    /// This function will only ever return errors of kind [`io::ErrorKind::WouldBlock`].
+    /// All other errors will be logged and converted to `Ok`.
     ///
-    /// UDP transmission errors are generally considered non-fatal because higher-level protocols must
+    /// UDP transmission errors are considered non-fatal because higher-level protocols must
     /// employ retransmits and timeouts anyway in order to deal with UDP's unreliable nature.
-    /// However, some errors (like NotConnected, NetworkDown) indicate the socket is no longer usable.
+    /// Swallowing send errors also keeps the ConnectionDriver alive so that idle timeouts
+    /// and keep-alive timers continue to function correctly.
     ///
-    /// If you would like to handle all errors yourself, use [`UdpSocketState::try_send`]
+    /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
     pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
         match send(self, socket.0, transmit) {
@@ -216,35 +216,8 @@ impl UdpSocketState {
             //   these by automatically clamping the MTUD upper bound to the interface MTU.
             Err(e) if e.raw_os_error() == Some(libc::EMSGSIZE) => Ok(()),
             Err(e) => {
-                // 获取错误类型和原始错误码
-                let kind = e.kind();
-                let os_error = e.raw_os_error();
-                
-                // 记录错误
                 log_sendmsg_error(&self.last_send_error, e, transmit);
-                
-                // 判断是否是不可恢复的错误
-                match kind {
-                    io::ErrorKind::NotConnected |
-                    io::ErrorKind::ConnectionReset |
-                    io::ErrorKind::ConnectionAborted |
-                    io::ErrorKind::BrokenPipe |
-                    io::ErrorKind::PermissionDenied |
-                    io::ErrorKind::NetworkDown |
-                    io::ErrorKind::NetworkUnreachable |
-                    io::ErrorKind::HostUnreachable |
-                    io::ErrorKind::Unsupported => {
-                        // 对于不可恢复的错误，创建一个新的错误并返回
-                        if let Some(code) = os_error {
-                            Err(io::Error::from_raw_os_error(code))
-                        } else {
-                            // 如果没有原始错误码，创建一个新的错误
-                            Err(io::Error::new(kind, "Fatal UDP error"))
-                        }
-                    },
-                    // 其他错误被视为非致命错误，返回 Ok
-                    _ => Ok(()),
-                }
+                Ok(())
             }
         }
     }
