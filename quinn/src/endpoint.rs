@@ -865,6 +865,7 @@ impl RecvState {
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
         
+        let mut response_buffer = Vec::<u8>::new();
         loop {
             
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
@@ -874,7 +875,7 @@ impl RecvState {
                         let mut data: BytesMut = buf[0..meta.len].into();
                         while !data.is_empty() {
                             let buf = data.split_to(meta.stride.min(data.len()));
-                            let mut response_buffer = Vec::new();
+                            response_buffer.clear();
                             match endpoint.handle(
                                 now,
                                 meta.addr,
