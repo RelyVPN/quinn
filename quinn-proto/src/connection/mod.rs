@@ -12,7 +12,7 @@ use frame::StreamMetaVec;
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use thiserror::Error;
-use tracing::{debug, error, trace, trace_span, warn};
+use tracing::{debug, error, info, trace, trace_span, warn};
 
 use crate::{
     Dir, Duration, EndpointConfig, Frame, INITIAL_MTU, Instant, MAX_CID_SIZE, MAX_STREAM_COUNT,
@@ -1182,7 +1182,14 @@ impl Connection {
                     self.kill(ConnectionError::TimedOut);
                 }
                 Timer::KeepAlive => {
-                    trace!("sending keep-alive");
+                    info!(
+                        ping_tx = self.stats.frame_tx.ping,
+                        ack_rx = self.stats.frame_rx.acks,
+                        ping_rx = self.stats.frame_rx.ping,
+                        stream_tx = self.stats.frame_tx.stream,
+                        stream_rx = self.stats.frame_rx.stream,
+                        "keepalive PING"
+                    );
                     self.ping();
                 }
                 Timer::LossDetection => {
