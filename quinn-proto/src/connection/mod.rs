@@ -1182,14 +1182,7 @@ impl Connection {
                     self.kill(ConnectionError::TimedOut);
                 }
                 Timer::KeepAlive => {
-                    info!(
-                        ping_tx = self.stats.frame_tx.ping,
-                        ack_rx = self.stats.frame_rx.acks,
-                        ping_rx = self.stats.frame_rx.ping,
-                        stream_tx = self.stats.frame_tx.stream,
-                        stream_rx = self.stats.frame_rx.stream,
-                        "keepalive PING"
-                    );
+                    trace!("keepalive PING");
                     self.ping();
                 }
                 Timer::LossDetection => {
