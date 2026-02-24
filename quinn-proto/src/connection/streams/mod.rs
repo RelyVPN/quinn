@@ -260,6 +260,11 @@ impl<'a> SendStream<'a> {
                 stream.connection_blocked = true;
                 self.state.connection_blocked.push(self.id);
             }
+            if self.state.data_sent >= self.state.max_data
+                && self.state.sent_data_blocked_at < self.state.max_data
+            {
+                self.state.pending_data_blocked = true;
+            }
             return Err(WriteError::Blocked);
         }
 

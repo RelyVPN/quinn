@@ -76,7 +76,7 @@ use spaces::Retransmits;
 use spaces::{PacketNumberFilter, PacketSpace, SendableFrames, SentPacket, ThinRetransmits};
 
 mod stats;
-pub use stats::{ConnectionStats, FrameStats, PathStats, UdpStats};
+pub use stats::{ConnectionStats, FlowControlStats, FrameStats, PathStats, UdpStats};
 
 mod streams;
 #[cfg(fuzzing)]
@@ -1273,10 +1273,21 @@ impl Connection {
 
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
+        use crate::connection::stats::FlowControlStats;
+
         let mut stats = self.stats;
         stats.path.rtt = self.path.rtt.get();
         stats.path.cwnd = self.path.congestion.window();
+        stats.path.bytes_in_flight = self.path.in_flight.bytes;
         stats.path.current_mtu = self.path.mtud.current_mtu();
+        let (data_sent, max_data, unacked_data, send_window) =
+            self.streams.flow_control_snapshot();
+        stats.flow_control = FlowControlStats {
+            data_sent,
+            max_data,
+            unacked_data,
+            send_window,
+        };
 
         stats
     }

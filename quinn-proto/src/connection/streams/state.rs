@@ -137,6 +137,10 @@ pub struct StreamsState {
 
     /// The shrink to be applied to local_max_data when receive_window is shrunk
     receive_window_shrink_debt: u64,
+    /// Whether a DATA_BLOCKED frame needs to be sent
+    pub(in crate::connection) pending_data_blocked: bool,
+    /// The max_data offset at which we last sent DATA_BLOCKED
+    pub(super) sent_data_blocked_at: u64,
 }
 
 impl StreamsState {
@@ -181,6 +185,8 @@ impl StreamsState {
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
             receive_window_shrink_debt: 0,
+            pending_data_blocked: false,
+            sent_data_blocked_at: 0,
         };
 
         for dir in Dir::iter() {
@@ -245,6 +251,8 @@ impl StreamsState {
         self.send_streams = 0;
         self.data_sent = 0;
         self.connection_blocked.clear();
+        self.pending_data_blocked = false;
+        self.sent_data_blocked_at = 0;
     }
 
     /// Process incoming stream frame
@@ -525,6 +533,17 @@ impl StreamsState {
                 Dir::Bi => stats.max_streams_bidi += 1,
             }
         }
+
+        // DATA_BLOCKED
+        if self.pending_data_blocked && buf.len() + 9 < max_size {
+            let offset = VarInt::try_from(self.max_data).unwrap_or(VarInt::MAX);
+            trace!(offset = offset.into_inner(), "DATA_BLOCKED");
+            buf.write(frame::FrameType::DATA_BLOCKED);
+            buf.write(offset);
+            stats.data_blocked += 1;
+            self.sent_data_blocked_at = self.max_data;
+            self.pending_data_blocked = false;
+        }
     }
 
     pub(crate) fn write_stream_frames(
@@ -705,7 +724,11 @@ impl StreamsState {
 
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
-        self.max_data = self.max_data.max(n.into());
+        let new_max: u64 = n.into();
+        if new_max > self.max_data {
+            self.max_data = new_max;
+            self.pending_data_blocked = false;
+        }
     }
 
     pub(crate) fn received_max_stream_data(
@@ -842,6 +865,10 @@ impl StreamsState {
 
     pub(crate) fn set_send_window(&mut self, send_window: u64) {
         self.send_window = send_window;
+    }
+
+    pub(crate) fn flow_control_snapshot(&self) -> (u64, u64, u64, u64) {
+        (self.data_sent, self.max_data, self.unacked_data, self.send_window)
     }
 
     /// Set the receive_window and returns whether the receive_window has been

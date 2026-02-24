@@ -138,6 +138,8 @@ pub struct PathStats {
     pub rtt: Duration,
     /// Current congestion window of the connection
     pub cwnd: u64,
+    /// Bytes of packets in flight (sent but not yet acknowledged or declared lost)
+    pub bytes_in_flight: u64,
     /// Congestion events on the connection
     pub congestion_events: u64,
     /// The amount of packets lost on this path
@@ -157,6 +159,20 @@ pub struct PathStats {
     pub current_mtu: u16,
 }
 
+/// Connection-level flow control diagnostics
+#[derive(Debug, Default, Copy, Clone)]
+#[non_exhaustive]
+pub struct FlowControlStats {
+    /// Total stream data bytes sent (cumulative, never decreases)
+    pub data_sent: u64,
+    /// Peer's connection-level flow control limit (MAX_DATA)
+    pub max_data: u64,
+    /// Stream data bytes sent but not yet acknowledged
+    pub unacked_data: u64,
+    /// Local congestion send window (mirrors cwnd)
+    pub send_window: u64,
+}
+
 /// Connection statistics
 #[derive(Debug, Default, Copy, Clone)]
 #[non_exhaustive]
@@ -171,4 +187,6 @@ pub struct ConnectionStats {
     pub frame_rx: FrameStats,
     /// Statistics related to the current transmission path
     pub path: PathStats,
+    /// Connection-level flow control diagnostics
+    pub flow_control: FlowControlStats,
 }

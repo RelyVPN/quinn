@@ -362,6 +362,7 @@ impl Retransmits {
             && !self.ack_frequency
             && !self.handshake_done
             && self.new_tokens.is_empty()
+            && !streams.pending_data_blocked
     }
 }
 
