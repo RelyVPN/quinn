@@ -12,7 +12,7 @@ use frame::StreamMetaVec;
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use thiserror::Error;
-use tracing::{debug, error, info, trace, trace_span, warn};
+use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::{
     Dir, Duration, EndpointConfig, Frame, INITIAL_MTU, Instant, MAX_CID_SIZE, MAX_STREAM_COUNT,
