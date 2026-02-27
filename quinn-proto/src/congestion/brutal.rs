@@ -12,17 +12,19 @@ const INITIAL_WINDOW: u64 = 10 * 1200;
 ///
 /// `cwnd = target_rate * rtt`, never shrinks below `MIN_WINDOW`.
 /// Inspired by the Hysteria project's Brutal sender.
+///
+/// `target_rate` is in **bytes per second**.
 #[derive(Debug)]
 pub struct Brutal {
-    target_rate_bps: Arc<AtomicU64>,
+    target_rate: Arc<AtomicU64>,
     rtt: Option<std::time::Duration>,
     mtu: u64,
 }
 
 impl Brutal {
-    fn new(target_rate_bps: Arc<AtomicU64>, mtu: u16) -> Self {
+    fn new(target_rate: Arc<AtomicU64>, mtu: u16) -> Self {
         Self {
-            target_rate_bps,
+            target_rate,
             rtt: None,
             mtu: mtu as u64,
         }
@@ -33,7 +35,7 @@ impl Brutal {
     }
 
     fn calc_window(&self) -> u64 {
-        let rate = self.target_rate_bps.load(Ordering::Relaxed);
+        let rate = self.target_rate.load(Ordering::Relaxed);
         if rate == 0 {
             return INITIAL_WINDOW;
         }
@@ -80,7 +82,7 @@ impl Controller for Brutal {
     }
 
     fn metrics(&self) -> ControllerMetrics {
-        let rate = self.target_rate_bps.load(Ordering::Relaxed);
+        let rate = self.target_rate.load(Ordering::Relaxed);
         ControllerMetrics {
             congestion_window: self.calc_window(),
             ssthresh: None,
@@ -90,7 +92,7 @@ impl Controller for Brutal {
 
     fn clone_box(&self) -> Box<dyn Controller> {
         Box::new(Brutal {
-            target_rate_bps: self.target_rate_bps.clone(),
+            target_rate: self.target_rate.clone(),
             rtt: self.rtt,
             mtu: self.mtu,
         })
@@ -107,22 +109,22 @@ impl Controller for Brutal {
 
 /// Configuration for the [`Brutal`] congestion controller.
 ///
-/// The `target_rate_bps` is a shared atomic so the rate can be adjusted
+/// The `target_rate` (bytes/sec) is a shared atomic so the rate can be adjusted
 /// dynamically (e.g. when entering slow-mode) without reconnecting.
 #[derive(Debug, Clone)]
 pub struct BrutalConfig {
-    target_rate_bps: Arc<AtomicU64>,
+    target_rate: Arc<AtomicU64>,
 }
 
 impl BrutalConfig {
     /// Create a new `BrutalConfig` with the given shared target rate (bytes/sec).
-    pub fn new(target_rate_bps: Arc<AtomicU64>) -> Self {
-        Self { target_rate_bps }
+    pub fn new(target_rate: Arc<AtomicU64>) -> Self {
+        Self { target_rate }
     }
 }
 
 impl ControllerFactory for BrutalConfig {
     fn build(self: Arc<Self>, _now: Instant, current_mtu: u16) -> Box<dyn Controller> {
-        Box::new(Brutal::new(self.target_rate_bps.clone(), current_mtu))
+        Box::new(Brutal::new(self.target_rate.clone(), current_mtu))
     }
 }
