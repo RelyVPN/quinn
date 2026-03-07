@@ -178,13 +178,11 @@ const IO_ERROR_LOG_INTERVAL: Duration = std::time::Duration::from_secs(60);
 ///
 /// Logging will only be performed if at least [`IO_ERROR_LOG_INTERVAL`]
 /// has elapsed since the last error was logged.
-/// `raw_os_error`: optional OS error code (e.g. 10040 on Windows) for a hint in the log.
 #[cfg(all(not(wasm_browser), any(feature = "tracing-log", feature = "log")))]
 fn log_sendmsg_error(
     last_send_error: &Mutex<Instant>,
     err: impl core::fmt::Debug,
     transmit: &Transmit<'_>,
-    raw_os_error: Option<i32>,
 ) {
     let now = Instant::now();
     let mut last_send_error = match last_send_error.lock() {
@@ -196,13 +194,9 @@ fn log_sendmsg_error(
     };
     if now.saturating_duration_since(*last_send_error) > IO_ERROR_LOG_INTERVAL {
         *last_send_error = now;
-        let hint = raw_os_error
-            .filter(|&c| c == 10040)
-            .map(|_| " (WSAEMSGSIZE: UDP payload exceeds path MTU or buffer limit; packet dropped, QUIC will retransmit)");
         log::warn!(
-            "sendmsg error: {:?}{}, Transmit: {{ destination: {:?}, src_ip: {:?}, ecn: {:?}, len: {:?}, segment_size: {:?} }}",
+            "sendmsg error: {:?}, Transmit: {{ destination: {:?}, src_ip: {:?}, ecn: {:?}, len: {:?}, segment_size: {:?} }}",
             err,
-            hint.unwrap_or(""),
             transmit.destination,
             transmit.src_ip,
             transmit.ecn,
@@ -214,7 +208,7 @@ fn log_sendmsg_error(
 
 // No-op
 #[cfg(not(any(wasm_browser, feature = "tracing-log", feature = "log")))]
-fn log_sendmsg_error(_: &Mutex<Instant>, _: impl core::fmt::Debug, _: &Transmit<'_>, _: Option<i32>) {}
+fn log_sendmsg_error(_: &Mutex<Instant>, _: impl core::fmt::Debug, _: &Transmit<'_>) {}
 
 /// A borrowed UDP socket
 ///
