@@ -156,8 +156,7 @@ impl UdpSocketState {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             Err(e) => {
-                log_sendmsg_error(&self.last_send_error, e, transmit);
-
+                log_sendmsg_error(&self.last_send_error, &e, transmit, e.raw_os_error());
                 Ok(())
             }
         }
