@@ -343,17 +343,11 @@ fn send(
 
         let e = io::Error::last_os_error();
         match e.kind() {
-            // Retry the transmission
             io::ErrorKind::Interrupted => continue,
             io::ErrorKind::WouldBlock => return Err(e),
             _ => {
-                // Some network adapters and drivers do not support GSO. Unfortunately, Linux
-                // offers no easy way for us to detect this short of an EIO or sometimes EINVAL
-                // when we try to actually send datagrams using it.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 if let Some(libc::EIO) | Some(libc::EINVAL) = e.raw_os_error() {
-                    // Prevent new transmits from being scheduled using GSO. Existing GSO transmits
-                    // may already be in the pipeline, so we need to tolerate additional failures.
                     if state.max_gso_segments() > 1 {
                         crate::log::info!(
                             "`libc::sendmsg` failed with {e}; halting segmentation offload"
@@ -362,10 +356,22 @@ fn send(
                             .max_gso_segments
                             .store(1, std::sync::atomic::Ordering::Relaxed);
                     }
+
+                    if let Some(segment_size) = transmit.effective_segment_size() {
+                        if e.raw_os_error() == Some(libc::EINVAL) {
+                            state.set_sendmsg_einval();
+                        }
+                        return send_segments(
+                            io,
+                            transmit,
+                            segment_size,
+                            &dst_addr,
+                            encode_src_ip,
+                            state.sendmsg_einval(),
+                        );
+                    }
                 }
 
-                // Some arguments to `sendmsg` are not supported. Switch to
-                // fallback mode and retry if we haven't already.
                 if e.raw_os_error() == Some(libc::EINVAL) && !state.sendmsg_einval() {
                     state.set_sendmsg_einval();
                     prepare_msg(
@@ -384,6 +390,49 @@ fn send(
             }
         }
     }
+}
+
+/// Retry a failed GSO transmit by splitting it into individual segments.
+///
+/// Called when `sendmsg` with `UDP_SEGMENT` fails (EIO/EINVAL on Linux/Android),
+/// indicating the kernel or NIC driver doesn't actually support GSO despite
+/// advertising it. Each segment is sent as a separate `sendmsg` call.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn send_segments(
+    io: SockRef<'_>,
+    transmit: &Transmit<'_>,
+    segment_size: usize,
+    dst_addr: &socket2::SockAddr,
+    encode_src_ip: bool,
+    sendmsg_einval: bool,
+) -> io::Result<()> {
+    for chunk in transmit.contents.chunks(segment_size) {
+        let segment = Transmit {
+            destination: transmit.destination,
+            ecn: transmit.ecn,
+            contents: chunk,
+            segment_size: None,
+            src_ip: transmit.src_ip,
+        };
+        let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
+        let mut iov: libc::iovec = unsafe { mem::zeroed() };
+        let mut ctrl = cmsg::Aligned([0u8; CMSG_LEN]);
+        prepare_msg(
+            &segment, dst_addr, &mut hdr, &mut iov, &mut ctrl, encode_src_ip, sendmsg_einval,
+        );
+        loop {
+            let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
+            if n >= 0 {
+                break;
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::Interrupted => continue,
+                _ => return Err(e),
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(apple_fast)]
