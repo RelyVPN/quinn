@@ -162,7 +162,7 @@ impl Endpoint {
         runtime.spawn(Box::pin(
             async {
                 if let Err(e) = driver.await {
-                    tracing::error!("I/O error: {}", e);
+                    tracing::warn!("endpoint driver I/O error: {}", e);
                 }
             }
             .instrument(Span::current()),
@@ -391,8 +391,23 @@ impl Future for EndpointDriver {
             Ok(result) => {
                 keep_going |= result;
             },
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => {
+                // Socket invalidated by OS (common on iOS during network changes).
+                // Gracefully close all connections so they see LocallyClosed
+                // instead of "endpoint driver future was dropped".
+                tracing::warn!("socket not connected, closing all connections gracefully");
+                let reason = Bytes::from_static(b"socket_not_connected");
+                for sender in endpoint.recv_state.connections.senders.values() {
+                    let _ = sender.send(ConnectionEvent::Close {
+                        error_code: VarInt::from_u32(0),
+                        reason: reason.clone(),
+                    });
+                }
+                endpoint.recv_state.connections.senders.clear();
+                return Poll::Ready(Ok(()));
+            }
             Err(e) => {
-                tracing::info!("❌ EndpointDriver::poll 错误: {:?}", e);
+                tracing::warn!("endpoint I/O error: {:?}", e);
                 return Poll::Ready(Err(e));
             }
         }
@@ -539,16 +554,6 @@ impl State {
             now,
         );
         self.recv_state.recv_limiter.finish_cycle(get_time);
-        
-        match &poll_res {
-            Ok(_) => {},
-            Err(e) => {
-                tracing::info!("❌ State::drive_recv poll_socket 错误: {:?}", e);
-                if e.kind() == io::ErrorKind::NotConnected {
-                    tracing::info!("❌ State::drive_recv NotConnected 错误");
-                }
-            }
-        }
         
         let poll_res = poll_res?;
         if poll_res.received_connection_packet {
@@ -898,7 +903,7 @@ impl RecvState {
                                     let sender = self.connections.senders.get_mut(&handle);
                                     if let Some(sender) = sender {
                                         if let Err(e) = sender.send(ConnectionEvent::Proto(event)) {
-                                            tracing::info!("❌ RecvState::poll_socket 发送失败: {:?}", e);
+                                            tracing::warn!("failed to forward connection event: {:?}", e);
                                         }
                                     }
                                 }
@@ -920,10 +925,6 @@ impl RecvState {
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
-                    tracing::info!("❌ RecvState::poll_socket 错误: {:?}", e);
-                    if e.kind() == io::ErrorKind::NotConnected {
-                        tracing::info!("❌ RecvState::poll_socket NotConnected 错误");
-                    }
                     return Err(e);
                 }
             }

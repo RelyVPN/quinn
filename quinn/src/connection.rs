@@ -70,7 +70,7 @@ impl Connecting {
         runtime.spawn(Box::pin(
             async {
                 if let Err(e) = driver.await {
-                    tracing::error!("I/O error: {e}");
+                    tracing::warn!("connection driver I/O error: {e}");
                 }
             }
             .instrument(Span::current()),
@@ -256,7 +256,11 @@ impl Future for ConnectionDriver {
             conn.terminate(e, &self.0.shared);
             return Poll::Ready(Ok(()));
         }
-        let mut keep_going = conn.drive_transmit(cx)?;
+        let mut keep_going = match conn.drive_transmit(cx) {
+            Ok(v) => v,
+            Err(_) if conn.error.is_some() => false,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
         // If a timer expires, there might be more to transmit. When we transmit something, we
         // might need to reset a timer. Hence, we must loop until neither happens.
         keep_going |= conn.drive_timer(cx);
@@ -1114,6 +1118,11 @@ impl State {
                     self.close(error_code, reason, shared);
                 }
                 Poll::Ready(None) => {
+                    if self.error.is_some() {
+                        // Already closing (e.g. from a preceding Close event);
+                        // don't overwrite the real error with a generic one.
+                        return Ok(());
+                    }
                     return Err(ConnectionError::TransportError(TransportError::new(
                         TransportErrorCode::INTERNAL_ERROR,
                         "endpoint driver future was dropped".to_string(),
