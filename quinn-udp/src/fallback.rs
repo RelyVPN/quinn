@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
-use super::{IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef, log_sendmsg_error};
+use super::{IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef, UdpSocketStateConfig, log_sendmsg_error};
 
 /// Fallback UDP socket interface that stubs out all special functionality
 ///
@@ -18,6 +18,10 @@ pub struct UdpSocketState {
 
 impl UdpSocketState {
     pub fn new(socket: UdpSockRef<'_>) -> io::Result<Self> {
+        Self::new_with_config(socket, UdpSocketStateConfig::default())
+    }
+
+    pub fn new_with_config(socket: UdpSockRef<'_>, _config: UdpSocketStateConfig) -> io::Result<Self> {
         socket.0.set_nonblocking(true)?;
         let now = Instant::now();
         Ok(Self {

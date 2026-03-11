@@ -44,7 +44,7 @@ impl MsgHdr for libc::msghdr {
     }
 }
 
-#[cfg(apple_fast)]
+#[cfg(apple)]
 impl MsgHdr for crate::imp::msghdr_x {
     type ControlMessage = libc::cmsghdr;
 

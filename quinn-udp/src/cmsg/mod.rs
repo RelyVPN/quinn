@@ -121,7 +121,7 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
         let current = self.cmsg.take().unwrap();
         self.cmsg = unsafe { self.hdr.cmsg_nxt_hdr(current).as_ref() };
 
-        #[cfg(apple_fast)]
+        #[cfg(apple)]
         {
             // On MacOS < 14 CMSG_NXTHDR might continuously return a zeroed cmsg. In
             // such case, return `None` instead, thus indicating the end of

@@ -23,6 +23,16 @@ pub trait Runtime: Send + Sync + Debug + 'static {
     /// Convert `t` into the socket type used by this runtime
     #[cfg(not(wasm_browser))]
     fn wrap_udp_socket(&self, t: std::net::UdpSocket) -> io::Result<Box<dyn AsyncUdpSocket>>;
+    /// Convert `t` into the socket type used by this runtime with additional UDP socket config.
+    #[cfg(not(wasm_browser))]
+    fn wrap_udp_socket_with_config(
+        &self,
+        t: std::net::UdpSocket,
+        config: udp::UdpSocketStateConfig,
+    ) -> io::Result<Box<dyn AsyncUdpSocket>> {
+        let _ = config;
+        self.wrap_udp_socket(t)
+    }
     /// Look up the current time
     ///
     /// Allows simulating the flow of time for testing.

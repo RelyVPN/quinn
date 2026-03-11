@@ -26,7 +26,15 @@ impl Runtime for SmolRuntime {
     }
 
     fn wrap_udp_socket(&self, sock: std::net::UdpSocket) -> io::Result<Box<dyn AsyncUdpSocket>> {
-        Ok(Box::new(UdpSocket::new(sock)?))
+        self.wrap_udp_socket_with_config(sock, udp::UdpSocketStateConfig::default())
+    }
+
+    fn wrap_udp_socket_with_config(
+        &self,
+        sock: std::net::UdpSocket,
+        config: udp::UdpSocketStateConfig,
+    ) -> io::Result<Box<dyn AsyncUdpSocket>> {
+        Ok(Box::new(UdpSocket::new(sock, config)?))
     }
 }
 
@@ -47,9 +55,9 @@ struct UdpSocket {
 }
 
 impl UdpSocket {
-    fn new(sock: std::net::UdpSocket) -> io::Result<Self> {
+    fn new(sock: std::net::UdpSocket, config: udp::UdpSocketStateConfig) -> io::Result<Self> {
         Ok(Self {
-            inner: Arc::new(udp::UdpSocketState::new((&sock).into())?),
+            inner: Arc::new(udp::UdpSocketState::new_with_config((&sock).into(), config)?),
             io: Arc::new(Async::new_nonblocking(sock)?),
         })
     }

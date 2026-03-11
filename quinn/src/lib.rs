@@ -71,6 +71,7 @@ pub use proto::{QlogConfig, QlogStream};
 #[cfg(any(feature = "rustls-aws-lc-rs", feature = "rustls-ring"))]
 pub use rustls;
 pub use udp;
+pub use udp::{AppleDatapath, UdpSocketStateConfig};
 
 pub use crate::connection::{
     AcceptBi, AcceptUni, Connecting, Connection, OpenBi, OpenUni, ReadDatagram, SendDatagram,

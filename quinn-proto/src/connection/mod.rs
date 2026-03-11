@@ -1179,10 +1179,10 @@ impl Connection {
                     self.endpoint_events.push_back(EndpointEventInner::Drained);
                 }
                 Timer::Idle => {
+                    log::info!("[quinn] idle timeout fired, killing connection");
                     self.kill(ConnectionError::TimedOut);
                 }
                 Timer::KeepAlive => {
-                    trace!("keepalive PING");
                     self.ping();
                 }
                 Timer::LossDetection => {
@@ -3220,7 +3220,7 @@ impl Connection {
 
         // PING
         if mem::replace(&mut space.ping_pending, false) {
-            trace!("PING");
+            trace!("PING frame written to packet");
             buf.write(frame::FrameType::PING);
             sent.non_retransmits = true;
             self.stats.frame_tx.ping += 1;

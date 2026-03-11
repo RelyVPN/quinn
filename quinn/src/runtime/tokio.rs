@@ -28,8 +28,16 @@ impl Runtime for TokioRuntime {
     }
 
     fn wrap_udp_socket(&self, sock: std::net::UdpSocket) -> io::Result<Box<dyn AsyncUdpSocket>> {
+        self.wrap_udp_socket_with_config(sock, udp::UdpSocketStateConfig::default())
+    }
+
+    fn wrap_udp_socket_with_config(
+        &self,
+        sock: std::net::UdpSocket,
+        config: udp::UdpSocketStateConfig,
+    ) -> io::Result<Box<dyn AsyncUdpSocket>> {
         Ok(Box::new(UdpSocket {
-            inner: Arc::new(udp::UdpSocketState::new((&sock).into())?),
+            inner: Arc::new(udp::UdpSocketState::new_with_config((&sock).into(), config)?),
             io: Arc::new(tokio::net::UdpSocket::from_std(sock)?),
         }))
     }

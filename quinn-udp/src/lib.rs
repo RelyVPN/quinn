@@ -80,6 +80,41 @@ mod log {
 #[cfg(not(wasm_browser))]
 pub use imp::UdpSocketState;
 
+/// Apple-specific UDP datapath selection.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum AppleDatapath {
+    /// Use the private `sendmsg_x` / `recvmsg_x` fast path.
+    Fast,
+    /// Use the standard `sendmsg` / `recvmsg` path.
+    Slow,
+}
+
+impl Default for AppleDatapath {
+    fn default() -> Self {
+        if cfg!(all(
+            any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos",
+                target_os = "visionos",
+                target_os = "watchos"
+            ),
+            feature = "fast-apple-datapath"
+        )) {
+            Self::Fast
+        } else {
+            Self::Slow
+        }
+    }
+}
+
+/// Runtime UDP socket configuration.
+#[derive(Debug, Copy, Clone, Default)]
+pub struct UdpSocketStateConfig {
+    /// Apple UDP datapath selection. Ignored on non-Apple targets.
+    pub apple_datapath: AppleDatapath,
+}
+
 /// Number of UDP packets to send/receive at a time
 #[cfg(not(wasm_browser))]
 pub const BATCH_SIZE: usize = imp::BATCH_SIZE;
@@ -161,7 +196,7 @@ impl Transmit<'_> {
     /// This case is actually quite common when splitting up a prepared GSO batch
     /// again after GSO has been disabled because the last datagram in a GSO
     /// batch is allowed to be smaller than the segment size.
-    #[allow(dead_code)] // used in non-apple_fast path and tests
+    #[allow(dead_code)]
     pub(crate) fn effective_segment_size(&self) -> Option<usize> {
         match self.segment_size? {
             size if size >= self.contents.len() => None,

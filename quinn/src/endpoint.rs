@@ -83,6 +83,19 @@ impl Endpoint {
         any(feature = "aws-lc-rs", feature = "ring"), // `EndpointConfig::default()` is only available with these
     ))]
     pub fn client(addr: SocketAddr) -> io::Result<Self> {
+        Self::client_with_udp_config(addr, udp::UdpSocketStateConfig::default())
+    }
+
+    /// Construct an endpoint suitable for creating outgoing connections with additional UDP config.
+    #[cfg(all(
+        not(wasm_browser),
+        any(feature = "runtime-tokio", feature = "runtime-smol"),
+        any(feature = "aws-lc-rs", feature = "ring"),
+    ))]
+    pub fn client_with_udp_config(
+        addr: SocketAddr,
+        udp_config: udp::UdpSocketStateConfig,
+    ) -> io::Result<Self> {
         let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
         if addr.is_ipv6() {
             if let Err(e) = socket.set_only_v6(false) {
@@ -95,7 +108,7 @@ impl Endpoint {
         Self::new_with_abstract_socket(
             EndpointConfig::default(),
             None,
-            runtime.wrap_udp_socket(socket.into())?,
+            runtime.wrap_udp_socket_with_config(socket.into(), udp_config)?,
             runtime,
         )
     }
@@ -136,7 +149,25 @@ impl Endpoint {
         socket: std::net::UdpSocket,
         runtime: Arc<dyn Runtime>,
     ) -> io::Result<Self> {
-        let socket = runtime.wrap_udp_socket(socket)?;
+        Self::new_with_udp_config(
+            config,
+            server_config,
+            socket,
+            runtime,
+            udp::UdpSocketStateConfig::default(),
+        )
+    }
+
+    /// Construct an endpoint with arbitrary configuration, socket, and UDP config.
+    #[cfg(not(wasm_browser))]
+    pub fn new_with_udp_config(
+        config: EndpointConfig,
+        server_config: Option<ServerConfig>,
+        socket: std::net::UdpSocket,
+        runtime: Arc<dyn Runtime>,
+        udp_config: udp::UdpSocketStateConfig,
+    ) -> io::Result<Self> {
+        let socket = runtime.wrap_udp_socket_with_config(socket, udp_config)?;
         Self::new_with_abstract_socket(config, server_config, socket, runtime)
     }
 

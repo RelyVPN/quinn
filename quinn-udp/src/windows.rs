@@ -12,7 +12,7 @@ use libc::{c_int, c_uint};
 use windows_sys::Win32::Networking::WinSock;
 
 use crate::{
-    EcnCodepoint, IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef,
+    EcnCodepoint, IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef, UdpSocketStateConfig,
     cmsg::{self, CMsgHdr},
     log::debug,
     log_sendmsg_error,
@@ -28,6 +28,10 @@ pub struct UdpSocketState {
 
 impl UdpSocketState {
     pub fn new(socket: UdpSockRef<'_>) -> io::Result<Self> {
+        Self::new_with_config(socket, UdpSocketStateConfig::default())
+    }
+
+    pub fn new_with_config(socket: UdpSockRef<'_>, _config: UdpSocketStateConfig) -> io::Result<Self> {
         assert!(
             CMSG_LEN
                 >= WinSock::CMSGHDR::cmsg_space(mem::size_of::<WinSock::IN6_PKTINFO>())
