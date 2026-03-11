@@ -14,6 +14,7 @@ use std::{
 
 use socket2::SockRef;
 
+#[allow(unused_imports)]
 use super::{
     AppleDatapath, EcnCodepoint, IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef,
     UdpSocketStateConfig, cmsg, log_sendmsg_error,
@@ -83,6 +84,7 @@ impl UdpSocketState {
         Self::new_with_config(sock, UdpSocketStateConfig::default())
     }
 
+    #[allow(unused_variables)]
     pub fn new_with_config(sock: UdpSockRef<'_>, config: UdpSocketStateConfig) -> io::Result<Self> {
         let io = sock.0;
         let mut cmsg_platform_space = 0;
@@ -548,6 +550,7 @@ fn send_slow(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -
     }
 }
 
+#[allow(unused_variables)]
 fn dispatch_recv(
     state: &UdpSocketState,
     io: SockRef<'_>,
@@ -730,6 +733,7 @@ fn prepare_msg_slow(
     hdr: &mut libc::msghdr,
     iov: &mut libc::iovec,
     ctrl: &mut cmsg::Aligned<[u8; CMSG_LEN]>,
+    #[allow(unused_variables)]
     encode_src_ip: bool,
     sendmsg_einval: bool,
 ) {
