@@ -6,15 +6,15 @@ use super::{Controller, ControllerFactory, ControllerMetrics};
 use crate::Instant;
 use crate::connection::RttEstimator;
 
-const INITIAL_WINDOW: u64 = 10 * 1200;
+const INITIAL_WINDOW: u64 = 64 * 1400;
 
 /// 5-second sliding window for ackRate sampling (matches official Hysteria).
 const PKT_INFO_SLOT_COUNT: usize = 5;
 /// Require ~50 full-size packets worth of data before trusting the ackRate.
 const MIN_SAMPLE_BYTES: u64 = 60_000;
-/// Never compensate beyond this — at 80% ack rate the sender pushes 1.25x target,
-/// which is the maximum tolerable overshoot.
-const MIN_ACK_RATE: f64 = 0.8;
+/// Floor for ackRate compensation.  At 0.5 the sender pushes up to 2× target,
+/// allowing full throughput delivery even at 50% packet loss.
+const MIN_ACK_RATE: f64 = 0.5;
 
 /// Per-second byte counters for ackRate estimation.
 #[derive(Clone, Debug, Default)]
@@ -36,8 +36,12 @@ struct ByteInfoSlot {
 /// split to reproduce the official architecture:
 ///
 ///   `window()` = `bps * rtt * 2 / ackRate`  (generous cwnd, never the bottleneck)
-///   `pacing_window()` = `bps * rtt * 0.8 / ackRate`
-///       → pacer rate = `1.25 * 0.8 * bps / ackRate` = `bps / ackRate`  (exact)
+///   `pacing_window()` = `bps * rtt * 0.84 / ackRate`
+///       → pacer rate = `1.25 * 0.84 * bps / ackRate` = `1.05 × bps / ackRate`
+///
+/// The 5% overshoot compensates for QUIC per-packet overhead (~44 bytes of
+/// header + AEAD tag per ~1400-byte packet ≈ 3.1%), ensuring the *payload*
+/// throughput reaches the target rate.
 ///
 /// `target_rate` is in **bytes per second**.
 #[derive(Debug)]
@@ -84,20 +88,26 @@ impl Brutal {
     }
 
     fn update_ack_rate(&mut self, current_secs: i64) {
+        const DECAY: f64 = 0.5; // half-life: 1 second
+
         let min_ts = current_secs - PKT_INFO_SLOT_COUNT as i64;
-        let (ack, loss) = self
+        let (w_ack, w_total) = self
             .slots
             .iter()
-            .filter(|s| s.timestamp_secs >= min_ts)
-            .fold((0u64, 0u64), |(a, l), s| {
-                (a + s.ack_bytes, l + s.loss_bytes)
+            .filter(|s| s.timestamp_secs >= min_ts && (s.ack_bytes + s.loss_bytes) > 0)
+            .fold((0.0f64, 0.0f64), |(wa, wt), s| {
+                let age = (current_secs - s.timestamp_secs) as f64;
+                let w = DECAY.powf(age);
+                (
+                    wa + s.ack_bytes as f64 * w,
+                    wt + (s.ack_bytes + s.loss_bytes) as f64 * w,
+                )
             });
-        let total = ack + loss;
-        if total < MIN_SAMPLE_BYTES {
+        if w_total < MIN_SAMPLE_BYTES as f64 * 0.25 {
             self.ack_rate = 1.0;
             return;
         }
-        let rate = ack as f64 / total as f64;
+        let rate = w_ack / w_total;
         self.ack_rate = rate.max(MIN_ACK_RATE);
     }
 
@@ -122,10 +132,10 @@ impl Brutal {
         }
     }
 
-    /// pacing_window = 0.8 × BDP / ackRate  →  pacer rate = 1.25 × 0.8 = 1.0 × bps / ackRate
+    /// pacing_window = 0.84 × BDP / ackRate  →  pacer rate = 1.25 × 0.84 = 1.05 × bps / ackRate
     fn calc_pacing_window(&self) -> u64 {
         match self.bdp_over_ack_rate() {
-            Some(bdp) => ((bdp * 0.8) as u64).max(self.min_window()),
+            Some(bdp) => ((bdp * 0.84) as u64).max(self.min_window()),
             None => INITIAL_WINDOW,
         }
     }
