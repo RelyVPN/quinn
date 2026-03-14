@@ -619,7 +619,7 @@ impl Connection {
                         smoothed_rtt,
                         bytes_to_send,
                         self.path.current_mtu(),
-                        self.path.congestion.window(),
+                        self.path.congestion.pacing_window(),
                         now,
                     ) {
                         self.timers.set(Timer::Pacing, delay);

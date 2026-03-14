@@ -74,6 +74,18 @@ pub trait Controller: Send + Sync {
     /// Number of ack-eliciting bytes that may be in flight
     fn window(&self) -> u64;
 
+    /// Window value fed to the pacer for rate calculation.
+    ///
+    /// Quinn's pacer refills tokens at `1.25 * pacing_window / rtt`.  Congestion
+    /// controllers that need a pacing rate different from `1.25 * window / rtt`
+    /// (e.g. Brutal, which wants an explicit bytes-per-second target) can override
+    /// this to decouple cwnd headroom from pacing.
+    ///
+    /// Defaults to [`Self::window()`].
+    fn pacing_window(&self) -> u64 {
+        self.window()
+    }
+
     /// Retrieve implementation-specific metrics used to populate `qlog` traces when they are enabled
     fn metrics(&self) -> ControllerMetrics {
         ControllerMetrics {

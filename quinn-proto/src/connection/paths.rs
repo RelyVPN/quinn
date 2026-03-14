@@ -118,7 +118,7 @@ impl PathData {
         Self {
             remote,
             rtt: prev.rtt,
-            pacing: Pacer::new(smoothed_rtt, congestion.window(), prev.current_mtu(), now),
+            pacing: Pacer::new(smoothed_rtt, congestion.pacing_window(), prev.current_mtu(), now),
             sending_ecn: true,
             congestion,
             challenge: None,
