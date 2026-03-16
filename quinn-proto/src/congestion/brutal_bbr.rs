@@ -126,6 +126,7 @@ pub struct BrutalBbr {
     bw_at_last_round: u64,
     rounds_wo_bw_gain: u64,
     ack_aggregation: AckAggregationState,
+    last_cwnd_reduction: Option<Instant>,
     rng: rand::rngs::StdRng,
 }
 
@@ -162,6 +163,7 @@ impl BrutalBbr {
             bw_at_last_round: 0,
             rounds_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
+            last_cwnd_reduction: None,
             rng: rand::rngs::StdRng::from_os_rng(),
         }
     }
@@ -445,7 +447,7 @@ impl Controller for BrutalBbr {
 
     fn on_congestion_event(
         &mut self,
-        _now: Instant,
+        now: Instant,
         _sent: Instant,
         is_persistent_congestion: bool,
         _is_ecn: bool,
@@ -454,6 +456,14 @@ impl Controller for BrutalBbr {
         if self.mode == Mode::Startup {
             return;
         }
+        if !is_persistent_congestion {
+            if let Some(last) = self.last_cwnd_reduction {
+                if now.saturating_duration_since(last) < self.min_rtt {
+                    return;
+                }
+            }
+        }
+        self.last_cwnd_reduction = Some(now);
         let factor = if is_persistent_congestion { 0.5 } else { 0.85 };
         let floor_cwnd = self.rate_to_cwnd(FLOOR_RATE);
         self.cwnd = ((self.cwnd as f64 * factor) as u64).max(floor_cwnd);
