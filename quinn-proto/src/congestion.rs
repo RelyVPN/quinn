@@ -7,11 +7,13 @@ use std::sync::Arc;
 
 mod bbr;
 mod brutal;
+mod brutal_bbr;
 mod cubic;
 mod new_reno;
 
 pub use bbr::{Bbr, BbrConfig};
 pub use brutal::{Brutal, BrutalConfig};
+pub use brutal_bbr::{BrutalBbr, BrutalBbrConfig};
 pub use cubic::{Cubic, CubicConfig};
 pub use new_reno::{NewReno, NewRenoConfig};
 

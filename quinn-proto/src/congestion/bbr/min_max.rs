@@ -28,14 +28,14 @@
 use std::fmt::Debug;
 
 #[derive(Copy, Clone, Debug)]
-pub(super) struct MinMax {
+pub(crate) struct MinMax {
     /// round count, not a timestamp
     window: u64,
     samples: [MinMaxSample; 3],
 }
 
 impl MinMax {
-    pub(super) fn get(&self) -> u64 {
+    pub(crate) fn get(&self) -> u64 {
         self.samples[0].value
     }
 
@@ -43,12 +43,12 @@ impl MinMax {
         self.samples.fill(sample);
     }
 
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.fill(Default::default())
     }
 
     /// update_min is also defined in the original source, but removed here since it is not used.
-    pub(super) fn update_max(&mut self, current_round: u64, measurement: u64) {
+    pub(crate) fn update_max(&mut self, current_round: u64, measurement: u64) {
         let sample = MinMaxSample {
             time: current_round,
             value: measurement,
