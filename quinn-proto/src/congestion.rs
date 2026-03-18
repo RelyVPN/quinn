@@ -94,6 +94,7 @@ pub trait Controller: Send + Sync {
             congestion_window: self.window(),
             ssthresh: None,
             pacing_rate: None,
+            ..Default::default()
         }
     }
 
@@ -117,6 +118,16 @@ pub struct ControllerMetrics {
     pub ssthresh: Option<u64>,
     /// Pacing rate (bits/s)
     pub pacing_rate: Option<u64>,
+    /// CC mode name (e.g. "Startup", "ProbeBw")
+    pub mode: Option<&'static str>,
+    /// Estimated bottleneck bandwidth (bytes/s)
+    pub bandwidth_estimate: Option<u64>,
+    /// Current pacing gain multiplier
+    pub pacing_gain: Option<f64>,
+    /// Whether the controller believes full bandwidth has been reached
+    pub is_at_full_bandwidth: Option<bool>,
+    /// Internal round-trip counter
+    pub round_count: Option<u64>,
 }
 
 /// Constructs controllers on demand

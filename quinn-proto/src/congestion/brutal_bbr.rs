@@ -497,10 +497,21 @@ impl Controller for BrutalBbr {
     }
 
     fn metrics(&self) -> ControllerMetrics {
+        let mode_str = match self.mode {
+            Mode::Startup => "Startup",
+            Mode::Drain => "Drain",
+            Mode::ProbeBw => "ProbeBw",
+            Mode::ProbeRtt => "ProbeRtt",
+        };
         ControllerMetrics {
             congestion_window: self.window(),
             ssthresh: None,
             pacing_rate: Some(self.clamped_rate() * 8),
+            mode: Some(mode_str),
+            bandwidth_estimate: Some(self.max_bandwidth.get_estimate()),
+            pacing_gain: Some(self.pacing_gain),
+            is_at_full_bandwidth: Some(self.is_at_full_bandwidth),
+            round_count: Some(self.round_count),
         }
     }
 

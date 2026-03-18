@@ -197,6 +197,7 @@ impl Controller for Brutal {
             congestion_window: self.calc_window(),
             ssthresh: None,
             pacing_rate: Some((rate as f64 / self.ack_rate * 8.0) as u64),
+            ..Default::default()
         }
     }
 
