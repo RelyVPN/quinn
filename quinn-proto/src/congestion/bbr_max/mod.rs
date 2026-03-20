@@ -4,17 +4,18 @@
 //! Based on standard BBR (Startup, Drain, ProbeBw, ProbeRtt) with two key
 //! differences:
 //!
-//! - **Aggressive mode** (estimated BW < 100 Mbps): all bandwidth-growth
+//! - **Aggressive mode** (estimated BW < 50 Mbps): all bandwidth-growth
 //!   limiters are disabled — no premature Startup exit, no recovery-based
 //!   cwnd reduction, no ProbeRtt.  This lets the controller reach high
 //!   bandwidth in ~3 RTTs instead of slowly crawling in ProbeBw.
-//! - **Floor rate** (100 Mbps): pacing rate, cwnd, and congestion window
-//!   never drop below 100 Mbps equivalent, preventing stall when `bw_est`
-//!   is zero (common on lossy / GFW-interfered links).
+//! - **Floor rate** (0–50 Mbps, scaled by ack_rate): pacing rate and cwnd
+//!   never drop below the adaptive floor, preventing stall when `bw_est`
+//!   is zero (common on lossy / GFW-interfered links).  Connections with
+//!   < 5% delivery rate get floor = 0 (only min_cwnd survives).
 //! - **Speed ceiling** via `Arc<AtomicU64>`: `> 0` enforces an upper bound
 //!   (e.g. free-tier speed limit), `== 0` means no ceiling.
 //!
-//! Above 100 Mbps the controller behaves like standard BBR with soft loss
+//! Above 50 Mbps the controller behaves like standard BBR with soft loss
 //! response (`cwnd *= 0.85`) instead of TCP-style recovery halving.
 //!
 //! ## Pacer integration
@@ -42,8 +43,8 @@ pub(crate) mod min_max;
 
 /// Below this estimated bandwidth all growth-limiters are disabled so the
 /// controller stays in Startup (2.885× gain) until it discovers real capacity.
-/// 100 Mbps = 12.5 MB/s.
-const AGGRESSIVE_THRESHOLD: u64 = 12_500_000;
+/// 50 Mbps = 6.25 MB/s.
+const AGGRESSIVE_THRESHOLD: u64 = 6_250_000;
 
 /// Minimum sending rate enforced at output regardless of BBR internal state.
 /// Prevents pacing stall when `bw_est` drops to zero (common on lossy/GFW links).
@@ -60,6 +61,26 @@ const INITIAL_WINDOW: u64 = 200 * BASE_DATAGRAM_SIZE;
 const DRAIN_TO_TARGET: bool = true;
 const PROBE_RTT_BASED_ON_BDP: bool = true;
 
+// ── Ack-rate adaptive floor ─────────────────────────────────────────────────
+
+/// Below this delivery ratio the connection is considered essentially dead;
+/// floor rate drops to zero (only `min_cwnd` survives) and loss events are
+/// no longer ignored even in aggressive mode.
+const CRITICAL_ACK_RATE: f64 = 0.05;
+
+/// Above this delivery ratio, full floor rate applies.  Between CRITICAL and
+/// HEALTHY the floor is linearly interpolated.
+const HEALTHY_ACK_RATE: f64 = 0.30;
+
+/// Sliding-window size (seconds) for ack-rate sampling.
+const ACK_RATE_SLOTS: usize = 4;
+
+/// Minimum weighted sample volume before ack-rate is trusted.
+const ACK_RATE_MIN_SAMPLE: f64 = 30_000.0;
+
+/// Exponential-decay half-life per second for slot weighting.
+const ACK_RATE_DECAY: f64 = 0.5;
+
 // ── Mode ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +89,15 @@ enum Mode {
     Drain,
     ProbeBw,
     ProbeRtt,
+}
+
+// ── Ack-rate slot ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+struct AckRateSlot {
+    timestamp_secs: i64,
+    ack_bytes: u64,
+    loss_bytes: u64,
 }
 
 // ── AckAggregation ───────────────────────────────────────────────────────────
@@ -144,10 +174,15 @@ pub struct BbrMax {
     ack_aggregation: AckAggregationState,
     last_cwnd_reduction: Option<Instant>,
     rng: rand::rngs::StdRng,
+
+    // ── Ack-rate tracking ────────────────────────────────────────────
+    ack_rate_slots: [AckRateSlot; ACK_RATE_SLOTS],
+    ack_rate: f64,
+    base_time: Instant,
 }
 
 impl BbrMax {
-    fn new(speed_limit: Arc<AtomicU64>, mtu: u16, _now: Instant) -> Self {
+    fn new(speed_limit: Arc<AtomicU64>, mtu: u16, now: Instant) -> Self {
         let mtu64 = mtu as u64;
         let min_cwnd = 4 * mtu64;
         Self {
@@ -180,6 +215,9 @@ impl BbrMax {
             ack_aggregation: AckAggregationState::default(),
             last_cwnd_reduction: None,
             rng: rand::rngs::StdRng::from_os_rng(),
+            ack_rate_slots: Default::default(),
+            ack_rate: 1.0,
+            base_time: now,
         }
     }
 
@@ -376,10 +414,54 @@ impl BbrMax {
         }
         if self.is_at_full_bandwidth {
             self.cwnd = target_window.min(self.cwnd + bytes_acked);
-        } else if (self.cwnd_gain < target_window as f64) || (self.acked_bytes < self.init_cwnd) {
+        } else if self.cwnd < target_window || self.acked_bytes < self.init_cwnd {
             self.cwnd += bytes_acked;
         }
         self.cwnd = self.cwnd.max(self.min_cwnd);
+    }
+
+    // ── Ack-rate helpers ───────────────────────────────────────────────
+
+    fn current_secs(&self, now: Instant) -> i64 {
+        now.checked_duration_since(self.base_time)
+            .unwrap_or_default()
+            .as_secs() as i64
+    }
+
+    fn ack_rate_slot_mut(&mut self, secs: i64) -> &mut AckRateSlot {
+        let idx = (secs as usize) % ACK_RATE_SLOTS;
+        let slot = &mut self.ack_rate_slots[idx];
+        if slot.timestamp_secs != secs {
+            slot.timestamp_secs = secs;
+            slot.ack_bytes = 0;
+            slot.loss_bytes = 0;
+        }
+        slot
+    }
+
+    fn update_ack_rate(&mut self, current_secs: i64) {
+        let min_ts = current_secs - ACK_RATE_SLOTS as i64;
+        let (w_ack, w_total) = self
+            .ack_rate_slots
+            .iter()
+            .filter(|s| s.timestamp_secs >= min_ts && (s.ack_bytes + s.loss_bytes) > 0)
+            .fold((0.0f64, 0.0f64), |(wa, wt), s| {
+                let age = (current_secs - s.timestamp_secs) as f64;
+                let w = ACK_RATE_DECAY.powf(age);
+                (
+                    wa + s.ack_bytes as f64 * w,
+                    wt + (s.ack_bytes + s.loss_bytes) as f64 * w,
+                )
+            });
+        if w_total < ACK_RATE_MIN_SAMPLE {
+            self.ack_rate = 1.0;
+            return;
+        }
+        self.ack_rate = (w_ack / w_total).clamp(0.0, 1.0);
+    }
+
+    fn is_connection_critical(&self) -> bool {
+        self.ack_rate < CRITICAL_ACK_RATE
     }
 
     // ── Ceiling helpers ──────────────────────────────────────────────
@@ -392,10 +474,22 @@ impl BbrMax {
         ((rate as f64) * rtt * 2.0).max(self.min_cwnd as f64) as u64
     }
 
-    /// FLOOR_RATE capped by speed_limit when a ceiling is set.
+    /// FLOOR_RATE scaled by delivery success (ack_rate):
+    ///   ack_rate >= 30%  → full floor
+    ///   5% .. 30%        → linear ramp
+    ///   < 5%             → 0 (only min_cwnd survives)
     fn effective_floor_rate(&self) -> u64 {
         let ceiling = self.speed_limit.load(Ordering::Relaxed);
-        if ceiling > 0 { FLOOR_RATE.min(ceiling) } else { FLOOR_RATE }
+        let base_floor = if ceiling > 0 { FLOOR_RATE.min(ceiling) } else { FLOOR_RATE };
+
+        if self.ack_rate >= HEALTHY_ACK_RATE {
+            base_floor
+        } else if self.ack_rate <= CRITICAL_ACK_RATE {
+            0
+        } else {
+            let t = (self.ack_rate - CRITICAL_ACK_RATE) / (HEALTHY_ACK_RATE - CRITICAL_ACK_RATE);
+            (base_floor as f64 * t) as u64
+        }
     }
 
     fn effective_pacing_rate(&self) -> u64 {
@@ -428,6 +522,8 @@ impl Controller for BbrMax {
         if self.is_min_rtt_expired(now, app_limited) || self.min_rtt > rtt.min() {
             self.min_rtt = rtt.min();
         }
+        let secs = self.current_secs(now);
+        self.ack_rate_slot_mut(secs).ack_bytes += bytes;
     }
 
     fn on_end_acks(
@@ -480,6 +576,9 @@ impl Controller for BbrMax {
         self.calculate_pacing_rate();
         self.calculate_cwnd(bytes_acked, excess_acked);
 
+        let secs = self.current_secs(now);
+        self.update_ack_rate(secs);
+
         self.prev_in_flight = in_flight;
     }
 
@@ -489,14 +588,19 @@ impl Controller for BbrMax {
         _sent: Instant,
         is_persistent_congestion: bool,
         _is_ecn: bool,
-        _lost_bytes: u64,
+        lost_bytes: u64,
     ) {
-        // Below threshold: ignore loss entirely to keep aggressive probing
-        if self.is_below_threshold() {
+        let secs = self.current_secs(now);
+        self.ack_rate_slot_mut(secs).loss_bytes += lost_bytes;
+        self.update_ack_rate(secs);
+
+        // Below threshold: ignore loss to keep aggressive probing —
+        // UNLESS ack_rate is critical, meaning almost nothing gets through.
+        if self.is_below_threshold() && !self.is_connection_critical() {
             return;
         }
-        // Above threshold: soft loss response (no recovery window)
-        if self.mode == Mode::Startup {
+        // Above threshold / critical: soft loss response
+        if self.mode == Mode::Startup && !self.is_connection_critical() {
             return;
         }
         if !is_persistent_congestion {
@@ -509,7 +613,7 @@ impl Controller for BbrMax {
         self.last_cwnd_reduction = Some(now);
         let factor = if is_persistent_congestion { 0.5 } else { 0.85 };
         let floor_cwnd = self.rate_to_cwnd(self.effective_floor_rate());
-        self.cwnd = ((self.cwnd as f64 * factor) as u64).max(floor_cwnd);
+        self.cwnd = ((self.cwnd as f64 * factor) as u64).max(floor_cwnd).max(self.min_cwnd);
     }
 
     fn on_mtu_update(&mut self, new_mtu: u16) {
@@ -556,6 +660,7 @@ impl Controller for BbrMax {
             pacing_gain: Some(self.pacing_gain),
             is_at_full_bandwidth: Some(self.is_at_full_bandwidth),
             round_count: Some(self.round_count),
+            ack_rate: Some(self.ack_rate),
         }
     }
 

@@ -512,6 +512,7 @@ impl Controller for BrutalBbr {
             pacing_gain: Some(self.pacing_gain),
             is_at_full_bandwidth: Some(self.is_at_full_bandwidth),
             round_count: Some(self.round_count),
+            ack_rate: None,
         }
     }
 

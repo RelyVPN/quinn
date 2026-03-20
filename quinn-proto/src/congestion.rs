@@ -130,6 +130,9 @@ pub struct ControllerMetrics {
     pub is_at_full_bandwidth: Option<bool>,
     /// Internal round-trip counter
     pub round_count: Option<u64>,
+    /// Delivery success rate (0.0–1.0) from sliding-window ack/loss tracking.
+    /// Only populated by controllers that implement ack-rate estimation.
+    pub ack_rate: Option<f64>,
 }
 
 /// Constructs controllers on demand
